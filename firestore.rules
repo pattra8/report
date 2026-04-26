@@ -1,0 +1,17 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /issues/{issueId} {
+      allow read, create, update, delete: if true;
+    }
+
+    match /private_issues/{issueId} {
+      allow read, create, update, delete: if true;
+    }
+
+    match /announcements/{announcementId} {
+      allow read, create, update, delete: if true;
+    }
+  }
+}
