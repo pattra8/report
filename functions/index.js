@@ -18,6 +18,8 @@ const db = admin.firestore();
 
 const LINE_CHANNEL_SECRET = defineSecret("LINE_CHANNEL_SECRET");
 const LINE_CHANNEL_ACCESS_TOKEN = defineSecret("LINE_CHANNEL_ACCESS_TOKEN");
+const LPR_ADMIN_PASSWORD = defineSecret("LPR_ADMIN_PASSWORD");
+const GH_TOKEN_SECRET = defineSecret("GH_TOKEN");
 
 const LINE_CONFIG_PATH = "system_config/line";
 const RESIDENT_SHEET_ID = "1NU6B7Yf225JGOpgqmQVLrHJl2tvxPtRR1gbtmBjYZyo";
@@ -37,14 +39,50 @@ const RESIDENT_HEADERS = [
   "zone",
   "plot",
 ];
+const GITHUB_OWNER = "pattra8";
+const GITHUB_REPO = "pattra8.github.io";
+const GITHUB_RESIDENT_PATH = "data/residents.json";
+const RESIDENT_PIN_COLLECTION = "resident_pins";
+const RESIDENTS_COLLECTION = "residents";
+const AUDIT_LOG_COLLECTION = "audit_log";
+const POLLS_COLLECTION = "polls";
+const RESIDENT_SIGNATURE_COLLECTION = "resident_signatures";
+const FORGOT_PIN_RATE_LIMIT = 20;
+const FORGOT_PIN_WINDOW_MS = 60 * 60 * 1000;
+const MAX_SIGNATURE_DATA_URL_BYTES = 350 * 1024;
+const LPR_CAMERAS = [
+  "http://lpr.pattra8.com:8241",
+  "http://lpr.pattra8.com:8242",
+];
+const LPR_USER = "admin";
+
+// ── Car quota ────────────────────────────────────────────────────────────────
+const CAR_QUOTA_DEFAULT = 2;
+const CAR_QUOTA_EXTRA = 3;
+// บ้านที่เช่าที่จอดรถโครงการคันที่ 3 → quota 3
+const CAR_QUOTA_3_HOUSES = new Set([
+  "38/3", "38/8", "38/15", "38/20", "38/21",
+  "38/35", "38/43", "38/45", "38/67",
+]);
 
 /**
  * Applies permissive CORS headers for static GitHub Pages admin requests.
+ * @param {*} req
  * @param {*} res
  * @return {void}
  */
-function setCorsHeaders(res) {
-  res.set("Access-Control-Allow-Origin", "https://pattra8.github.io");
+function setCorsHeaders(req, res) {
+  const allowedOrigins = new Set([
+    "https://pattra8.com",
+    "https://www.pattra8.com",
+    "https://pattra8.github.io",
+  ]);
+  const origin = req.get("Origin");
+  res.set(
+      "Access-Control-Allow-Origin",
+      allowedOrigins.has(origin) ? origin : "https://pattra8.com",
+  );
+  res.set("Vary", "Origin");
   res.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.set("Access-Control-Allow-Headers", "Content-Type");
   res.set("Cache-Control", "no-store");
@@ -332,6 +370,450 @@ function validateAnnouncementRequest(body) {
 }
 
 /**
+ * Normalizes plate inputs from strings or arrays.
+ * @param {*} value
+ * @return {string[]}
+ */
+function normalizePlateArray(value) {
+  const raw = Array.isArray(value) ? value : String(value || "").split(",");
+  return [...new Set(raw
+      .flatMap((item) => String(item || "").split(/[,;\n\r]+/))
+      .map((item) => item.replace(/[\s-]/g, "").trim())
+      .filter(Boolean))];
+}
+
+/**
+ * Normalizes a house number for resident auth lookup.
+ * @param {string} houseNo
+ * @return {string}
+ */
+function normalizeHouseNo(houseNo) {
+  return String(houseNo || "").trim().replace(/\s+/g, "");
+}
+
+/**
+ * Returns the maximum number of cars allowed for a house.
+ * Houses renting a 3rd project parking spot get quota=3; all others get 2.
+ * @param {string} houseNo
+ * @return {number}
+ */
+function getCarQuota(houseNo) {
+  return CAR_QUOTA_3_HOUSES.has(normalizeHouseNo(houseNo)) ?
+    CAR_QUOTA_EXTRA :
+    CAR_QUOTA_DEFAULT;
+}
+
+/**
+ * Converts a house number into a Firestore-safe document id.
+ * @param {string} houseNo
+ * @return {string}
+ */
+function residentPinDocId(houseNo) {
+  return normalizeHouseNo(houseNo).replace(/\//g, "_");
+}
+
+/**
+ * Generates a random six-digit resident PIN.
+ * @return {string}
+ */
+function generateResidentPin() {
+  return String(crypto.randomInt(0, 1000000)).padStart(6, "0");
+}
+
+/**
+ * Hashes a resident PIN with a per-house salt.
+ * @param {string} pin
+ * @param {string} salt
+ * @return {string}
+ */
+function hashResidentPin(pin, salt) {
+  return crypto
+      .createHash("sha256")
+      .update(`${salt}:${String(pin || "")}`)
+      .digest("hex");
+}
+
+/**
+ * Validates resident PIN input shape.
+ * @param {string} pin
+ * @return {string}
+ */
+function normalizeResidentPin(pin) {
+  const clean = String(pin || "").trim();
+  if (!/^\d{6}$/.test(clean)) {
+    throw new Error("PIN must be 6 digits");
+  }
+  return clean;
+}
+
+/**
+ * Validates an in-browser e-signature data URL before storing it.
+ * @param {string} signatureDataUrl
+ * @return {string}
+ */
+function normalizeSignatureDataUrl(signatureDataUrl) {
+  const value = String(signatureDataUrl || "").trim();
+  if (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(value)) {
+    throw new Error("Invalid signature");
+  }
+  if (Buffer.byteLength(value, "utf8") > MAX_SIGNATURE_DATA_URL_BYTES) {
+    throw new Error("Signature is too large");
+  }
+  return value;
+}
+
+/**
+ * Gets the per-house resident signature document ref.
+ * @param {string} houseNo
+ * @return {FirebaseFirestore.DocumentReference}
+ */
+function getResidentSignatureRef(houseNo) {
+  return db
+      .collection(RESIDENT_SIGNATURE_COLLECTION)
+      .doc(residentPinDocId(houseNo));
+}
+
+/**
+ * Normalizes text for resident identity checks.
+ * @param {string} value
+ * @return {string}
+ */
+function normalizeIdentityText(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, "");
+}
+
+/**
+ * Normalizes phone for resident identity checks.
+ * @param {string} value
+ * @return {string}
+ */
+function normalizeIdentityPhone(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+/**
+ * Checks whether a resident-provided answer matches stored resident data.
+ * @param {string} stored
+ * @param {string} answer
+ * @param {"text"|"email"|"phone"} type
+ * @return {boolean}
+ */
+function residentIdentityMatches(stored, answer, type) {
+  if (!stored || !answer) return false;
+  if (type === "phone") {
+    return normalizeIdentityPhone(stored) === normalizeIdentityPhone(answer);
+  }
+  return normalizeIdentityText(stored) === normalizeIdentityText(answer);
+}
+
+/**
+ * Escapes XML text content.
+ * @param {string} value
+ * @return {string}
+ */
+function escapeXml(value) {
+  return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&apos;");
+}
+
+/**
+ * Parses a Digest WWW-Authenticate header into a key/value object.
+ * @param {string} header
+ * @return {Object}
+ */
+function parseDigestChallenge(header) {
+  const challenge = String(header || "").replace(/^Digest\s+/i, "");
+  const params = {};
+  const matcher = /(\w+)=("([^"]*)"|([^,]*))/g;
+  let match;
+
+  while ((match = matcher.exec(challenge)) !== null) {
+    params[match[1]] = match[3] !== undefined ? match[3] : match[4];
+  }
+
+  return params;
+}
+
+/**
+ * Computes an HTTP Digest Authorization header.
+ * @param {Object} params
+ * @param {Object} options
+ * @return {string}
+ */
+function buildDigestAuth(params, options) {
+  const cnonce = crypto.randomBytes(8).toString("hex");
+  const nc = "00000001";
+  const qop = String(params.qop || "auth").split(",")[0].trim() || "auth";
+  const algorithm = params.algorithm || "MD5";
+  const ha1 = crypto.createHash("md5")
+      .update(`${options.username}:${params.realm}:${options.password}`)
+      .digest("hex");
+  const ha2 = crypto.createHash("md5")
+      .update(`${options.method}:${options.uri}`)
+      .digest("hex");
+  const response = crypto.createHash("md5")
+      .update(`${ha1}:${params.nonce}:${nc}:${cnonce}:${qop}:${ha2}`)
+      .digest("hex");
+
+  return [
+    `Digest username="${options.username}"`,
+    `realm="${params.realm}"`,
+    `nonce="${params.nonce}"`,
+    `uri="${options.uri}"`,
+    `algorithm=${algorithm}`,
+    `response="${response}"`,
+    `qop=${qop}`,
+    `nc=${nc}`,
+    `cnonce="${cnonce}"`,
+    params.opaque !== undefined ? `opaque="${params.opaque}"` : "",
+  ].filter(Boolean).join(", ");
+}
+
+/**
+ * Calls a Hikvision ISAPI endpoint using HTTP Digest auth.
+ * @param {string} cameraBase
+ * @param {string} path
+ * @param {Object} options
+ * @return {Promise<{status: number, text: string}>}
+ */
+async function hikvisionFetch(cameraBase, path, options = {}) {
+  const url = `${cameraBase}${path}`;
+  const method = options.method || "GET";
+  const first = await fetch(url, {method});
+
+  if (first.status !== 401) {
+    const text = await first.text();
+    return {status: first.status, text};
+  }
+
+  const challenge = parseDigestChallenge(first.headers.get("www-authenticate"));
+  const auth = buildDigestAuth(challenge, {
+    username: LPR_USER,
+    password: LPR_ADMIN_PASSWORD.value(),
+    method,
+    uri: path,
+  });
+
+  const response = await fetch(url, {
+    method,
+    headers: {
+      "Authorization": auth,
+      ...(options.headers || {}),
+    },
+    body: options.body,
+  });
+  const text = await response.text();
+  return {status: response.status, text};
+}
+
+/**
+ * Verifies that the submitted GitHub token can read the resident data repo.
+ * @param {string} token
+ * @return {Promise<void>}
+ */
+async function validateGithubToken(token) {
+  const cleanToken = String(token || "").trim();
+  if (!cleanToken) {
+    throw new Error("Missing GitHub token");
+  }
+
+  const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}` +
+    `/contents/${GITHUB_RESIDENT_PATH}`;
+  const response = await fetch(url, {
+    headers: {
+      "Authorization": `token ${cleanToken}`,
+      "Accept": "application/vnd.github.v3+json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`GitHub token rejected (${response.status})`);
+  }
+}
+
+/**
+ * Searches one camera for a plate.
+ * @param {string} cameraBase
+ * @param {string} plate
+ * @return {Promise<boolean>}
+ */
+async function lprPlateExists(cameraBase, plate) {
+  const body = "<LPListAuditSearchDescription>" +
+    "<maxResults>20</maxResults>" +
+    "<searchResultPosition>0</searchResultPosition>" +
+    "<searchID>0</searchID>" +
+    `<LicensePlate>${escapeXml(plate)}</LicensePlate>` +
+    "</LPListAuditSearchDescription>";
+  const result = await hikvisionFetch(
+      cameraBase,
+      "/ISAPI/Traffic/channels/1/searchLPListAudit",
+      {
+        method: "POST",
+        headers: {"Content-Type": "application/xml; charset=UTF-8"},
+        body,
+      },
+  );
+
+  if (result.status !== 200) {
+    throw new Error(`search failed (${result.status}): ${result.text}`);
+  }
+
+  const match = result.text.match(/<totalMatches>(\d+)<\/totalMatches>/);
+  return Number(match && match[1] || 0) > 0;
+}
+
+/**
+ * Adds one allowlist plate to one camera.
+ * @param {string} cameraBase
+ * @param {string} plate
+ * @return {Promise<Object>}
+ */
+async function lprAddPlate(cameraBase, plate) {
+  if (await lprPlateExists(cameraBase, plate)) {
+    return {plate, action: "skip", reason: "exists"};
+  }
+
+  const now = new Date().toISOString().slice(0, 19);
+  const payload = {
+    LicensePlateInfoList: [{
+      listType: "allowList",
+      LicensePlate: plate,
+      cardNo: "",
+      cardID: "",
+      plateType: "92TypeCivil",
+      plateColor: "blue",
+      plateDescription: "",
+      name: "",
+      certificateType: "ID",
+      certificateNumber: "",
+      operationType: "add",
+      virtualParkingNum: "",
+      groupName: "weifenzu",
+      createTime: now,
+      effectiveStartDate: "1970-01-01T00:00:00",
+      effectiveTime: "2099-12-30T00:00:00",
+      operation: "new",
+    }],
+  };
+  const result = await hikvisionFetch(
+      cameraBase,
+      "/ISAPI/Traffic/channels/1/licensePlateAuditData/record?format=json",
+      {
+        method: "PUT",
+        headers: {"Content-Type": "application/json; charset=UTF-8"},
+        body: JSON.stringify(payload),
+      },
+  );
+  const data = JSON.parse(result.text || "{}");
+
+  if (result.status !== 200 || data.statusCode !== 1) {
+    throw new Error(`add ${plate} failed (${result.status}): ${result.text}`);
+  }
+
+  return {plate, action: "add"};
+}
+
+/**
+ * Removes one plate from one camera if present.
+ * @param {string} cameraBase
+ * @param {string} plate
+ * @return {Promise<Object>}
+ */
+async function lprRemovePlate(cameraBase, plate) {
+  if (!(await lprPlateExists(cameraBase, plate))) {
+    return {plate, action: "skip", reason: "missing"};
+  }
+
+  const payload = {
+    deleteAllEnabled: false,
+    licensePlate: [plate],
+  };
+  const result = await hikvisionFetch(
+      cameraBase,
+      "/ISAPI/Traffic/channels/1/DelLicensePlateAuditData?format=json",
+      {
+        method: "PUT",
+        headers: {"Content-Type": "application/json; charset=UTF-8"},
+        body: JSON.stringify(payload),
+      },
+  );
+  const data = JSON.parse(result.text || "{}");
+
+  if (result.status !== 200 || data.statusCode !== 1) {
+    throw new Error(
+        `remove ${plate} failed (${result.status}): ${result.text}`,
+    );
+  }
+
+  return {plate, action: "remove"};
+}
+
+/**
+ * Syncs car plate differences to all configured LPR cameras.
+ * @param {Object} params
+ * @return {Promise<Object>}
+ */
+async function syncLprCarDiff({houseNo, oldCars, newCars, allCars}) {
+  const normalizedOldCars = normalizePlateArray(oldCars);
+  const normalizedNewCars = normalizePlateArray(newCars);
+  const allCarSet = new Set(normalizePlateArray(allCars));
+  const oldSet = new Set(normalizedOldCars);
+  const newSet = new Set(normalizedNewCars);
+  const toAdd = normalizedNewCars.filter((plate) => !oldSet.has(plate));
+  const toRemove = normalizedOldCars.filter((plate) =>
+    !newSet.has(plate) && !allCarSet.has(plate),
+  );
+  const results = [];
+
+  for (const camera of LPR_CAMERAS) {
+    const cameraResult = {camera, added: [], removed: [], errors: []};
+
+    for (const plate of toAdd) {
+      try {
+        cameraResult.added.push(await lprAddPlate(camera, plate));
+      } catch (error) {
+        cameraResult.errors.push({
+          plate,
+          action: "add",
+          error: error.message,
+        });
+      }
+    }
+
+    for (const plate of toRemove) {
+      try {
+        cameraResult.removed.push(await lprRemovePlate(camera, plate));
+      } catch (error) {
+        cameraResult.errors.push({
+          plate,
+          action: "remove",
+          error: error.message,
+        });
+      }
+    }
+
+    results.push(cameraResult);
+  }
+
+  const errorCount = results.reduce(
+      (total, item) => total + item.errors.length,
+      0,
+  );
+
+  return {
+    ok: errorCount === 0,
+    houseNo: String(houseNo || ""),
+    toAdd,
+    toRemove,
+    results,
+  };
+}
+
+/**
  * Gets the configured LINE target id.
  * @return {Promise<string|null>}
  */
@@ -507,7 +989,7 @@ exports.lineWebhook = onRequest(
 );
 
 exports.residentSheetSync = onRequest(async (req, res) => {
-  setCorsHeaders(res);
+  setCorsHeaders(req, res);
 
   if (req.method === "OPTIONS") {
     res.status(204).send("");
@@ -601,6 +1083,331 @@ exports.residentSheetSync = onRequest(async (req, res) => {
   }
 });
 
+/**
+ * Verifies a resident PIN and returns the PIN doc data.
+ * Throws with a .status property on failure.
+ * @param {string} houseNo
+ * @param {string} pin
+ * @return {Promise<Object>}
+ */
+async function verifyResidentPinInternal(houseNo, pin) {
+  const docRef = db
+      .collection(RESIDENT_PIN_COLLECTION)
+      .doc(residentPinDocId(houseNo));
+  const doc = await docRef.get();
+  if (!doc.exists) {
+    const err = new Error("PIN not configured");
+    err.status = 404;
+    throw err;
+  }
+  const data = doc.data() || {};
+  const cleanPin = normalizeResidentPin(pin);
+  const pinHash = hashResidentPin(cleanPin, data.salt || "");
+  if (pinHash !== data.pinHash) {
+    await docRef.set(
+        {lastFailedAt: admin.firestore.FieldValue.serverTimestamp()},
+        {merge: true},
+    );
+    const err = new Error("Invalid PIN");
+    err.status = 401;
+    throw err;
+  }
+  return data;
+}
+
+/**
+ * Writes a single audit log entry (fire-and-forget, never blocks the caller).
+ * @param {string} action
+ * @param {string} houseNo
+ * @param {Object} extra
+ * @param {boolean} success
+ */
+function writeAuditLog(action, houseNo, extra = {}, success = true) {
+  db.collection(AUDIT_LOG_COLLECTION).add({
+    action,
+    houseNo,
+    success,
+    ts: admin.firestore.FieldValue.serverTimestamp(),
+    ...extra,
+  }).catch((err) => logger.warn("audit_log write failed", err));
+}
+
+exports.residentPinAuth = onRequest(async (req, res) => {
+  setCorsHeaders(req, res);
+
+  if (req.method === "OPTIONS") {
+    res.status(204).send("");
+    return;
+  }
+
+  if (req.method !== "POST") {
+    res.status(405).json({ok: false, error: "Method Not Allowed"});
+    return;
+  }
+
+  try {
+    const body = req.body || {};
+    const action = String(body.action || "verify").trim();
+    const houseNo = normalizeHouseNo(body.houseNo);
+
+    if (action === "bootstrapResidentData") {
+      if (body.adminPassword !== RESIDENT_ADMIN_PASSWORD) {
+        res.status(401).json({ok: false, error: "Unauthorized"});
+        return;
+      }
+      const residents = Array.isArray(body.residents) ? body.residents : [];
+      if (!residents.length) {
+        res.status(400).json({ok: false, error: "Missing residents array"});
+        return;
+      }
+      const batch = db.batch();
+      for (const r of residents) {
+        const rHouseNo = normalizeHouseNo(r.house_no);
+        if (!rHouseNo) continue;
+        const docRef = db
+            .collection(RESIDENTS_COLLECTION)
+            .doc(residentPinDocId(rHouseNo));
+        batch.set(docRef, {
+          house_no: rHouseNo,
+          name: r.name || "",
+          email: r.email || "",
+          phone: r.phone || "",
+          deed_no: r.deed_no || "",
+          zone: r.zone || "",
+          plot: r.plot || "",
+          cars: Array.isArray(r.cars) ? r.cars : [],
+          motorcycles: Array.isArray(r.motorcycles) ? r.motorcycles : [],
+          last_updated: r.last_updated || "",
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+      }
+      await batch.commit();
+      res.status(200).json({ok: true, count: residents.length});
+      return;
+    }
+
+    if (action === "bootstrap") {
+      if (body.adminPassword !== RESIDENT_ADMIN_PASSWORD) {
+        res.status(401).json({ok: false, error: "Unauthorized"});
+        return;
+      }
+
+      const rawUrl = `https://raw.githubusercontent.com/${GITHUB_OWNER}/` +
+        `${GITHUB_REPO}/main/${GITHUB_RESIDENT_PATH}`;
+      const response = await fetch(`${rawUrl}?t=${Date.now()}`);
+      if (!response.ok) {
+        throw new Error(`Resident data fetch failed (${response.status})`);
+      }
+
+      const residents = await response.json();
+      const batch = db.batch();
+      const created = [];
+      const skipped = [];
+
+      for (const resident of residents) {
+        const residentHouseNo = normalizeHouseNo(resident.house_no);
+        if (!residentHouseNo) continue;
+
+        const docRef = db
+            .collection(RESIDENT_PIN_COLLECTION)
+            .doc(residentPinDocId(residentHouseNo));
+        const doc = await docRef.get();
+        if (doc.exists && !body.force) {
+          skipped.push(residentHouseNo);
+          continue;
+        }
+
+        const pin = generateResidentPin();
+        const salt = crypto.randomBytes(16).toString("hex");
+        batch.set(docRef, {
+          houseNo: residentHouseNo,
+          pinHash: hashResidentPin(pin, salt),
+          salt,
+          changedByResident: false,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+        created.push({houseNo: residentHouseNo, pin});
+      }
+
+      await batch.commit();
+      res.status(200).json({ok: true, created, skipped});
+      return;
+    }
+
+    if (action === "adminAuditLogs") {
+      if (body.adminPassword !== RESIDENT_ADMIN_PASSWORD) {
+        res.status(401).json({ok: false, error: "Unauthorized"});
+        return;
+      }
+      const limit = Math.min(Math.max(Number(body.limit || 80), 1), 200);
+      const snap = await db.collection(AUDIT_LOG_COLLECTION)
+          .orderBy("ts", "desc")
+          .limit(limit)
+          .get();
+      res.status(200).json({
+        ok: true,
+        logs: snap.docs.map((doc) => ({id: doc.id, ...doc.data()})),
+      });
+      return;
+    }
+
+    if (!houseNo) {
+      res.status(400).json({ok: false, error: "Missing houseNo"});
+      return;
+    }
+
+    const docRef = db
+        .collection(RESIDENT_PIN_COLLECTION)
+        .doc(residentPinDocId(houseNo));
+    const doc = await docRef.get();
+    if (!doc.exists) {
+      res.status(404).json({ok: false, error: "PIN not configured"});
+      return;
+    }
+
+    const data = doc.data() || {};
+
+    if (action === "adminReset") {
+      await validateGithubToken(body.githubToken);
+      const pin = generateResidentPin();
+      const salt = crypto.randomBytes(16).toString("hex");
+      await docRef.set({
+        houseNo: data.houseNo || houseNo,
+        pinHash: hashResidentPin(pin, salt),
+        salt,
+        changedByResident: false,
+        resetByAdmin: true,
+        adminResetAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+      writeAuditLog("admin_pin_reset", houseNo, {ip: req.ip});
+      res.status(200).json({ok: true, houseNo: data.houseNo || houseNo, pin});
+      return;
+    }
+
+    if (action === "verify") {
+      const pin = normalizeResidentPin(body.pin);
+      const pinHash = hashResidentPin(pin, data.salt || "");
+      if (pinHash !== data.pinHash) {
+        await docRef.set({
+          lastFailedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+        writeAuditLog("pin_verify", houseNo, {ip: req.ip}, false);
+        res.status(401).json({ok: false, error: "Invalid PIN"});
+        return;
+      }
+
+      await docRef.set({
+        lastLoginAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+      writeAuditLog("pin_verify", houseNo, {ip: req.ip}, true);
+      res.status(200).json({ok: true, houseNo: data.houseNo || houseNo});
+      return;
+    }
+
+    if (action === "change") {
+      const oldPin = normalizeResidentPin(body.oldPin);
+      const newPin = normalizeResidentPin(body.newPin);
+      const oldHash = hashResidentPin(oldPin, data.salt || "");
+      if (oldHash !== data.pinHash) {
+        writeAuditLog("pin_change", houseNo, {ip: req.ip}, false);
+        res.status(401).json({ok: false, error: "Invalid PIN"});
+        return;
+      }
+
+      const salt = crypto.randomBytes(16).toString("hex");
+      await docRef.set({
+        pinHash: hashResidentPin(newPin, salt),
+        salt,
+        changedByResident: true,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+      writeAuditLog("pin_change", houseNo, {ip: req.ip}, true);
+      res.status(200).json({ok: true, houseNo: data.houseNo || houseNo});
+      return;
+    }
+
+    if (action === "reset") {
+      const newPin = normalizeResidentPin(body.newPin);
+
+      // Rate limit: max 20 attempts per hour
+      const nowMs = Date.now();
+      const recentAttempts = (data.resetAttempts || [])
+          .filter((t) => nowMs - t < FORGOT_PIN_WINDOW_MS);
+      if (recentAttempts.length >= FORGOT_PIN_RATE_LIMIT) {
+        writeAuditLog("pin_reset", houseNo,
+            {ip: req.ip, reason: "rate_limited"}, false);
+        res.status(429).json({ok: false, error: "rate_limited",
+          message: "ลองใหม่ในอีก 1 ชั่วโมง"});
+        return;
+      }
+
+      // Read resident identity data from Firestore residents collection
+      const residentDocSnap = await db
+          .collection(RESIDENTS_COLLECTION)
+          .doc(residentPinDocId(houseNo))
+          .get();
+
+      let resident = null;
+      if (residentDocSnap.exists) {
+        resident = residentDocSnap.data();
+      } else {
+        // Fallback to GitHub raw URL during migration window
+        const rawUrl = `https://raw.githubusercontent.com/${GITHUB_OWNER}/` +
+          `${GITHUB_REPO}/main/${GITHUB_RESIDENT_PATH}`;
+        const response = await fetch(`${rawUrl}?t=${Date.now()}`);
+        if (response.ok) {
+          const residents = await response.json();
+          resident = residents.find((item) =>
+            normalizeHouseNo(item.house_no) === houseNo) || null;
+        }
+      }
+
+      if (!resident) {
+        res.status(404).json({ok: false, error: "Resident not found"});
+        return;
+      }
+
+      const checks = [
+        residentIdentityMatches(resident.name, body.name, "text"),
+        residentIdentityMatches(resident.email, body.email, "email"),
+        residentIdentityMatches(resident.phone, body.phone, "phone"),
+      ];
+      const matched = checks.filter(Boolean).length;
+      if (matched < 2) {
+        await docRef.set({
+          lastResetFailedAt: admin.firestore.FieldValue.serverTimestamp(),
+          resetAttempts: [...recentAttempts, nowMs],
+        }, {merge: true});
+        writeAuditLog("pin_reset", houseNo, {ip: req.ip}, false);
+        res.status(403).json({ok: false, error: "Identity check failed"});
+        return;
+      }
+
+      const salt = crypto.randomBytes(16).toString("hex");
+      await docRef.set({
+        pinHash: hashResidentPin(newPin, salt),
+        salt,
+        changedByResident: true,
+        resetByResident: true,
+        resetAttempts: [],
+        resetAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+      writeAuditLog("pin_reset", houseNo, {ip: req.ip}, true);
+      res.status(200).json({ok: true, houseNo: data.houseNo || houseNo});
+      return;
+    }
+
+    res.status(400).json({ok: false, error: "Unknown action"});
+  } catch (error) {
+    logger.error("residentPinAuth failed", error);
+    const status = /PIN must|Missing|Unknown/i.test(error.message) ? 400 : 500;
+    res.status(status).json({ok: false, error: error.message});
+  }
+});
+
 exports.broadcastLineAnnouncement = onRequest(
     {
       secrets: [LINE_CHANNEL_ACCESS_TOKEN],
@@ -608,7 +1415,7 @@ exports.broadcastLineAnnouncement = onRequest(
       timeoutSeconds: 60,
     },
     async (req, res) => {
-      setCorsHeaders(res);
+      setCorsHeaders(req, res);
 
       if (req.method === "OPTIONS") {
         res.status(204).send("");
@@ -684,6 +1491,45 @@ exports.broadcastLineAnnouncement = onRequest(
     },
 );
 
+exports.lprPlateSync = onRequest(
+    {
+      secrets: [LPR_ADMIN_PASSWORD],
+      memory: "512MiB",
+      timeoutSeconds: 60,
+    },
+    async (req, res) => {
+      setCorsHeaders(req, res);
+
+      if (req.method === "OPTIONS") {
+        res.status(204).send("");
+        return;
+      }
+
+      if (req.method !== "POST") {
+        res.status(405).json({ok: false, error: "Method Not Allowed"});
+        return;
+      }
+
+      try {
+        const body = req.body || {};
+        await validateGithubToken(body.githubToken);
+
+        const result = await syncLprCarDiff({
+          houseNo: body.houseNo,
+          oldCars: body.oldCars,
+          newCars: body.newCars,
+          allCars: body.allCars,
+        });
+
+        res.status(result.ok ? 200 : 207).json(result);
+      } catch (error) {
+        const status = /token|Unauthorized/i.test(error.message) ? 401 : 500;
+        logger.error("lprPlateSync failed", error);
+        res.status(status).json({ok: false, error: error.message});
+      }
+    },
+);
+
 /**
  * Creates a Firestore trigger that sends LINE alerts.
  * @param {string} collectionPath
@@ -729,4 +1575,775 @@ exports.notifyLinePublicIssue = createIssueNotifier(
 exports.notifyLinePrivateIssue = createIssueNotifier(
     "private_issues",
     "มีรายการแจ้งปัญหาส่วนตัวใหม่",
+);
+
+// ── Resident-facing API (Phase 2) ──────────────────────────────────────────
+
+exports.getResidentData = onRequest(
+    {secrets: [GH_TOKEN_SECRET]},
+    async (req, res) => {
+      setCorsHeaders(req, res);
+      if (req.method === "OPTIONS") {
+        res.status(204).send(""); return;
+      }
+      if (req.method !== "POST") {
+        res.status(405).json({ok: false, error: "Method Not Allowed"});
+        return;
+      }
+      try {
+        const body = req.body || {};
+        const houseNo = normalizeHouseNo(body.houseNo);
+        if (!houseNo) {
+          res.status(400).json({ok: false, error: "Missing houseNo"});
+          return;
+        }
+        await verifyResidentPinInternal(houseNo, String(body.pin || ""));
+        const snap = await db
+            .collection(RESIDENTS_COLLECTION)
+            .doc(residentPinDocId(houseNo))
+            .get();
+        if (!snap.exists) {
+          res.status(404).json({ok: false, error: "Resident not found"});
+          return;
+        }
+        const r = snap.data() || {};
+        writeAuditLog("view", houseNo, {ip: req.ip});
+        res.status(200).json({ok: true, resident: {
+          house_no: r.house_no || houseNo,
+          name: r.name || "",
+          email: r.email || "",
+          phone: r.phone || "",
+          deed_no: r.deed_no || "",
+          zone: r.zone || "",
+          plot: r.plot || "",
+          cars: r.cars || [],
+          motorcycles: r.motorcycles || [],
+          last_updated: r.last_updated || "",
+        }});
+      } catch (err) {
+        logger.error("getResidentData failed", err);
+        res.status(err.status || 500).json({ok: false, error: err.message});
+      }
+    },
+);
+
+exports.updateResidentData = onRequest(
+    {
+      secrets: [LPR_ADMIN_PASSWORD],
+      memory: "512MiB",
+      timeoutSeconds: 60,
+    },
+    async (req, res) => {
+      setCorsHeaders(req, res);
+      if (req.method === "OPTIONS") {
+        res.status(204).send(""); return;
+      }
+      if (req.method !== "POST") {
+        res.status(405).json({ok: false, error: "Method Not Allowed"});
+        return;
+      }
+
+      try {
+        const body = req.body || {};
+        const houseNo = normalizeHouseNo(body.houseNo);
+        if (!houseNo) {
+          res.status(400).json({ok: false, error: "Missing houseNo"});
+          return;
+        }
+        await verifyResidentPinInternal(houseNo, String(body.pin || ""));
+
+        const docRef = db
+            .collection(RESIDENTS_COLLECTION)
+            .doc(residentPinDocId(houseNo));
+        const snap = await docRef.get();
+        if (!snap.exists) {
+          res.status(404).json({ok: false, error: "Resident not found"});
+          return;
+        }
+
+        const oldData = snap.data() || {};
+        const patch = {};
+        const profile = body.profile || {};
+        if (Object.prototype.hasOwnProperty.call(profile, "name")) {
+          patch.name = String(profile.name || "").trim();
+        }
+        if (Object.prototype.hasOwnProperty.call(profile, "email")) {
+          patch.email = String(profile.email || "").trim();
+        }
+        if (Object.prototype.hasOwnProperty.call(profile, "phone")) {
+          patch.phone = String(profile.phone || "").trim();
+        }
+
+        const vehicles = body.vehicles || {};
+        const touchesCars =
+          Object.prototype.hasOwnProperty.call(vehicles, "cars");
+        const touchesMotorcycles =
+          Object.prototype.hasOwnProperty.call(vehicles, "motorcycles");
+        if (touchesCars) {
+          patch.cars = normalizePlateArray(vehicles.cars);
+          // Quota check: allow edits/deletes on grandfathered data,
+          // but block any increase beyond quota
+          const quota = getCarQuota(houseNo);
+          const oldCount = (oldData.cars || []).length;
+          if (patch.cars.length > quota && patch.cars.length > oldCount) {
+            res.status(400).json({
+              ok: false,
+              error: "car_quota_exceeded",
+              quota,
+              current: oldCount,
+            });
+            return;
+          }
+        }
+        if (touchesMotorcycles) {
+          patch.motorcycles = normalizePlateArray(vehicles.motorcycles);
+        }
+
+        if (!Object.keys(patch).length) {
+          res.status(400).json({ok: false, error: "No changes submitted"});
+          return;
+        }
+
+        patch.last_updated = new Date().toISOString();
+        patch.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+        patch.updatedBy = "resident";
+        patch.updatedByIp = req.ip || "";
+
+        await docRef.set(patch, {merge: true});
+
+        let lprSync = null;
+        if (touchesCars) {
+          const allResidentsSnap = await db
+              .collection(RESIDENTS_COLLECTION)
+              .get();
+          const allCars = [];
+          allResidentsSnap.docs.forEach((residentDoc) => {
+            const item = residentDoc.data() || {};
+            normalizePlateArray(item.cars).forEach((plate) =>
+              allCars.push(plate),
+            );
+          });
+          lprSync = await syncLprCarDiff({
+            houseNo,
+            oldCars: oldData.cars || [],
+            newCars: patch.cars || [],
+            allCars,
+          });
+        }
+
+        const changedFields = Object.keys(patch)
+            .filter((key) => ![
+              "last_updated",
+              "updatedAt",
+              "updatedBy",
+              "updatedByIp",
+            ].includes(key));
+        writeAuditLog("resident_update", houseNo, {
+          ip: req.ip,
+          changedFields,
+          old: {
+            name: oldData.name || "",
+            email: oldData.email || "",
+            phone: oldData.phone || "",
+            cars: oldData.cars || [],
+            motorcycles: oldData.motorcycles || [],
+          },
+          new: {
+            name: Object.prototype.hasOwnProperty.call(patch, "name") ?
+              patch.name : oldData.name || "",
+            email: Object.prototype.hasOwnProperty.call(patch, "email") ?
+              patch.email : oldData.email || "",
+            phone: Object.prototype.hasOwnProperty.call(patch, "phone") ?
+              patch.phone : oldData.phone || "",
+            cars: Object.prototype.hasOwnProperty.call(patch, "cars") ?
+              patch.cars : oldData.cars || [],
+            motorcycles:
+              Object.prototype.hasOwnProperty.call(patch, "motorcycles") ?
+                patch.motorcycles : oldData.motorcycles || [],
+          },
+          lprSync,
+        }, lprSync ? lprSync.ok : true);
+
+        res.status(lprSync && !lprSync.ok ? 207 : 200).json({
+          ok: !(lprSync && !lprSync.ok),
+          houseNo,
+          updated: changedFields,
+          lprSync,
+        });
+      } catch (err) {
+        logger.error("updateResidentData failed", err);
+        res.status(err.status || 500).json({ok: false, error: err.message});
+      }
+    },
+);
+
+exports.submitRequest = onRequest(
+    {secrets: [GH_TOKEN_SECRET]},
+    async (req, res) => {
+      setCorsHeaders(req, res);
+      if (req.method === "OPTIONS") {
+        res.status(204).send(""); return;
+      }
+      if (req.method !== "POST") {
+        res.status(405).json({ok: false, error: "Method Not Allowed"});
+        return;
+      }
+      try {
+        const body = req.body || {};
+        const houseNo = normalizeHouseNo(body.houseNo);
+        if (!houseNo) {
+          res.status(400).json({ok: false, error: "Missing houseNo"});
+          return;
+        }
+        await verifyResidentPinInternal(houseNo, String(body.pin || ""));
+        const title = String(body.title || "").trim();
+        const issueBody = String(body.body || "").trim();
+        const labels = Array.isArray(body.labels) ?
+          body.labels.map(String) : ["vehicle"];
+        if (!title) {
+          res.status(400).json({ok: false, error: "Missing title"});
+          return;
+        }
+        const ghRes = await fetch(
+            `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/issues`,
+            {
+              method: "POST",
+              headers: {
+                "Authorization": `token ${GH_TOKEN_SECRET.value()}`,
+                "Accept": "application/vnd.github.v3+json",
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({title, body: issueBody, labels}),
+            },
+        );
+        if (!ghRes.ok) {
+          const errText = await ghRes.text();
+          throw new Error(
+              `GitHub issue creation failed (${ghRes.status}): ${errText}`,
+          );
+        }
+        const issue = await ghRes.json();
+        writeAuditLog("submit_request", houseNo,
+            {ip: req.ip, issue_number: issue.number});
+        res.status(200).json({
+          ok: true,
+          issue_number: issue.number,
+          issue_url: issue.html_url,
+        });
+      } catch (err) {
+        logger.error("submitRequest failed", err);
+        res.status(err.status || 500).json({ok: false, error: err.message});
+      }
+    },
+);
+
+exports.cancelRequest = onRequest(
+    {secrets: [GH_TOKEN_SECRET]},
+    async (req, res) => {
+      setCorsHeaders(req, res);
+      if (req.method === "OPTIONS") {
+        res.status(204).send(""); return;
+      }
+      if (req.method !== "POST") {
+        res.status(405).json({ok: false, error: "Method Not Allowed"});
+        return;
+      }
+      try {
+        const body = req.body || {};
+        const houseNo = normalizeHouseNo(body.houseNo);
+        const issueNumber = Number(body.issue_number);
+        if (!houseNo || !issueNumber) {
+          res.status(400).json({
+            ok: false, error: "Missing houseNo or issue_number",
+          });
+          return;
+        }
+        await verifyResidentPinInternal(houseNo, String(body.pin || ""));
+        const base = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}` +
+          `/issues/${issueNumber}`;
+        const headers = {
+          "Authorization": `token ${GH_TOKEN_SECRET.value()}`,
+          "Accept": "application/vnd.github.v3+json",
+          "Content-Type": "application/json",
+        };
+        await fetch(`${base}/comments`, {
+          method: "POST", headers,
+          body: JSON.stringify({body: "🚫 ยกเลิกคำร้องโดยเจ้าของบ้าน"}),
+        });
+        const closeRes = await fetch(base, {
+          method: "PATCH", headers,
+          body: JSON.stringify({state: "closed"}),
+        });
+        if (!closeRes.ok) {
+          const errText = await closeRes.text();
+          throw new Error(
+              `GitHub close failed (${closeRes.status}): ${errText}`,
+          );
+        }
+        writeAuditLog("cancel_request", houseNo,
+            {ip: req.ip, issue_number: issueNumber});
+        res.status(200).json({ok: true, issue_number: issueNumber});
+      } catch (err) {
+        logger.error("cancelRequest failed", err);
+        res.status(err.status || 500).json({ok: false, error: err.message});
+      }
+    },
+);
+
+exports.getPendingRequests = onRequest(
+    {secrets: [GH_TOKEN_SECRET]},
+    async (req, res) => {
+      setCorsHeaders(req, res);
+      if (req.method === "OPTIONS") {
+        res.status(204).send(""); return;
+      }
+      if (req.method !== "POST") {
+        res.status(405).json({ok: false, error: "Method Not Allowed"});
+        return;
+      }
+      try {
+        const body = req.body || {};
+        const houseNo = normalizeHouseNo(body.houseNo);
+        if (!houseNo) {
+          res.status(400).json({ok: false, error: "Missing houseNo"});
+          return;
+        }
+        await verifyResidentPinInternal(houseNo, String(body.pin || ""));
+        const ghRes = await fetch(
+            `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}` +
+            `/issues?labels=vehicle&state=open&per_page=30`,
+            {
+              headers: {
+                "Authorization": `token ${GH_TOKEN_SECRET.value()}`,
+                "Accept": "application/vnd.github.v3+json",
+              },
+            },
+        );
+        if (!ghRes.ok) {
+          res.status(200).json({ok: true, issues: []});
+          return;
+        }
+        const issues = await ghRes.json();
+        const filtered = issues.filter((issue) => {
+          if ((issue.title || "").includes(`บ้าน ${houseNo}`)) return true;
+          try {
+            const bm = (issue.body || "").match(/```json\s*([\s\S]*?)```/);
+            if (bm) {
+              const d = JSON.parse(bm[1]);
+              if (normalizeHouseNo(d.house_no) === houseNo) return true;
+            }
+          } catch (_) {/* ignore parse errors */}
+          return false;
+        });
+        res.status(200).json({ok: true, issues: filtered});
+      } catch (err) {
+        logger.error("getPendingRequests failed", err);
+        res.status(err.status || 500).json({ok: false, error: err.message});
+      }
+    },
+);
+
+// ── Poll / Voting System ─────────────────────────────────────────────────────
+
+exports.pollAction = onRequest(
+    {secrets: [GH_TOKEN_SECRET]},
+    async (req, res) => {
+      setCorsHeaders(req, res);
+      if (req.method === "OPTIONS") return res.status(204).send("");
+      if (req.method !== "POST") {
+        return res.status(405).json({ok: false, error: "POST only"});
+      }
+      const body = req.body || {};
+      const {action} = body;
+
+      // ── helpers ──────────────────────────────────────────────────────────
+      const isAdmin = () =>
+        body.adminPassword === RESIDENT_ADMIN_PASSWORD;
+
+      const getPollRef = (pollId) =>
+        db.collection(POLLS_COLLECTION).doc(pollId);
+
+      try {
+        // ── list (public) ───────────────────────────────────────────────
+        if (action === "list") {
+          const snap = await db.collection(POLLS_COLLECTION)
+              .orderBy("createdAt", "desc")
+              .limit(20)
+              .get();
+          const polls = snap.docs.map((d) => ({id: d.id, ...d.data()}));
+          return res.status(200).json({ok: true, polls});
+        }
+
+        // ── create (admin) ──────────────────────────────────────────────
+        if (action === "create") {
+          if (!isAdmin()) {
+            return res.status(403).json(
+                {ok: false, error: "Forbidden"},
+            );
+          }
+          const {poll} = body;
+          if (!poll || !poll.title || !poll.type) {
+            return res.status(400).json(
+                {ok: false, error: "Missing poll fields"},
+            );
+          }
+          const validTypes = ["single", "multi", "rating"];
+          if (!validTypes.includes(poll.type)) {
+            return res.status(400).json(
+                {ok: false, error: "Invalid poll type"},
+            );
+          }
+          if (
+            poll.type !== "rating" &&
+            (!Array.isArray(poll.options) || poll.options.length < 2)
+          ) {
+            return res.status(400).json(
+                {ok: false, error: "options required for single/multi"},
+            );
+          }
+          const deadline = poll.deadline ?
+            admin.firestore.Timestamp.fromDate(new Date(poll.deadline)) :
+            null;
+          const docRef = await db.collection(POLLS_COLLECTION).add({
+            title: String(poll.title).slice(0, 200),
+            description: String(poll.description || "").slice(0, 1000),
+            type: poll.type,
+            options: poll.type === "rating" ?
+              null :
+              poll.options.map((o) => String(o).slice(0, 100)),
+            maxChoices: poll.type === "multi" ?
+              (Number(poll.maxChoices) || 2) :
+              null,
+            deadline,
+            totalHouses: Number(poll.totalHouses) || 68,
+            status: "active",
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          return res.status(200).json({ok: true, pollId: docRef.id});
+        }
+
+        // ── close (admin) ───────────────────────────────────────────────
+        if (action === "close") {
+          if (!isAdmin()) {
+            return res.status(403).json({ok: false, error: "Forbidden"});
+          }
+          const {pollId} = body;
+          if (!pollId) {
+            return res.status(400).json(
+                {ok: false, error: "Missing pollId"},
+            );
+          }
+          await getPollRef(pollId).update({status: "closed"});
+          return res.status(200).json({ok: true});
+        }
+
+        // ── delete (admin) ──────────────────────────────────────────────
+        if (action === "delete") {
+          if (!isAdmin()) {
+            return res.status(403).json({ok: false, error: "Forbidden"});
+          }
+          const {pollId} = body;
+          if (!pollId) {
+            return res.status(400).json(
+                {ok: false, error: "Missing pollId"},
+            );
+          }
+          const pollRef = getPollRef(pollId);
+          const pollSnap = await pollRef.get();
+          if (!pollSnap.exists) {
+            return res.status(404).json({ok: false, error: "Poll not found"});
+          }
+          // Delete all votes subcollection first
+          const votesSnap = await pollRef.collection("votes").get();
+          const batch = db.batch();
+          votesSnap.docs.forEach((d) => batch.delete(d.ref));
+          batch.delete(pollRef);
+          await batch.commit();
+          writeAuditLog("poll_delete", "admin", {pollId, ip: req.ip});
+          return res.status(200).json({ok: true});
+        }
+
+        // ── vote (PIN required) ─────────────────────────────────────────
+        if (action === "vote") {
+          const {houseNo, pin, pollId, choice} = body;
+          if (!houseNo || !pin || !pollId || choice === undefined) {
+            return res.status(400).json(
+                {ok: false, error: "Missing houseNo, pin, pollId or choice"},
+            );
+          }
+          const normalizedHouseNo = normalizeHouseNo(houseNo);
+          await verifyResidentPinInternal(houseNo, pin);
+          const pollSnap = await getPollRef(pollId).get();
+          if (!pollSnap.exists) {
+            return res.status(404).json(
+                {ok: false, error: "Poll not found"},
+            );
+          }
+          const poll = pollSnap.data();
+          if (poll.status !== "active") {
+            return res.status(400).json(
+                {ok: false, error: "Poll is closed"},
+            );
+          }
+          const deadlineMs = poll.deadline ? poll.deadline.toMillis() : null;
+          if (deadlineMs && Date.now() > deadlineMs) {
+            await getPollRef(pollId).update({status: "closed"});
+            return res.status(400).json(
+                {ok: false, error: "Poll deadline has passed"},
+            );
+          }
+          const voteDocId = residentPinDocId(houseNo);
+          const voteRef = getPollRef(pollId)
+              .collection("votes")
+              .doc(voteDocId);
+          const existing = await voteRef.get();
+          if (existing.exists) {
+            return res.status(409).json(
+                {ok: false, error: "already_voted"},
+            );
+          }
+          // validate choice
+          if (poll.type === "single") {
+            if (
+              !poll.options.includes(String(choice))
+            ) {
+              return res.status(400).json(
+                  {ok: false, error: "Invalid choice"},
+              );
+            }
+          } else if (poll.type === "multi") {
+            if (
+              !Array.isArray(choice) ||
+              choice.length === 0 ||
+              choice.length > (poll.maxChoices || 2) ||
+              !choice.every((c) => poll.options.includes(String(c)))
+            ) {
+              return res.status(400).json(
+                  {ok: false, error: "Invalid choice"},
+              );
+            }
+          } else if (poll.type === "rating") {
+            const r = Number(choice);
+            if (!Number.isInteger(r) || r < 1 || r > 5) {
+              return res.status(400).json(
+                  {ok: false, error: "Rating must be 1-5"},
+              );
+            }
+          }
+
+          const signatureRef = getResidentSignatureRef(normalizedHouseNo);
+          const signatureSnap = await signatureRef.get();
+          let signatureReused = signatureSnap.exists;
+          if (!signatureSnap.exists) {
+            const signatureDataUrl =
+              normalizeSignatureDataUrl(body.signatureDataUrl);
+            await signatureRef.set({
+              houseNo: normalizedHouseNo,
+              signatureDataUrl,
+              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              source: "vote",
+            });
+            signatureReused = false;
+          }
+
+          await voteRef.set({
+            houseNo: normalizedHouseNo,
+            choice,
+            votedAt: admin.firestore.FieldValue.serverTimestamp(),
+            signedAt: admin.firestore.FieldValue.serverTimestamp(),
+            signatureRef: `${RESIDENT_SIGNATURE_COLLECTION}/${voteDocId}`,
+            signatureReused,
+            ip: req.ip || "",
+          });
+          await writeAuditLog(
+              "poll_vote",
+              houseNo,
+              {pollId, ip: req.ip},
+              true,
+          );
+          return res.status(200).json({ok: true});
+        }
+
+        // ── signatureStatus (PIN required) ──────────────────────────────
+        if (action === "signatureStatus") {
+          const {houseNo, pin, pollId} = body;
+          if (!houseNo || !pin || !pollId) {
+            return res.status(400).json(
+                {ok: false, error: "Missing fields"},
+            );
+          }
+          const normalizedHouseNo = normalizeHouseNo(houseNo);
+          await verifyResidentPinInternal(normalizedHouseNo, pin);
+          const voteDocId = residentPinDocId(normalizedHouseNo);
+          const voteSnap = await getPollRef(pollId)
+              .collection("votes")
+              .doc(voteDocId)
+              .get();
+          if (voteSnap.exists) {
+            return res.status(200).json(
+                {ok: true, alreadyVoted: true, choice: voteSnap.data().choice},
+            );
+          }
+          const signatureSnap =
+            await getResidentSignatureRef(normalizedHouseNo).get();
+          const signature = signatureSnap.exists ?
+            signatureSnap.data() || {} :
+            null;
+          return res.status(200).json({
+            ok: true,
+            alreadyVoted: false,
+            hasSignature: Boolean(signature),
+            signatureDataUrl: signature ? signature.signatureDataUrl || "" : "",
+          });
+        }
+
+        // ── hasVoted (PIN required) ─────────────────────────────────────
+        if (action === "hasVoted") {
+          const {houseNo, pin, pollId} = body;
+          if (!houseNo || !pin || !pollId) {
+            return res.status(400).json(
+                {ok: false, error: "Missing fields"},
+            );
+          }
+          await verifyResidentPinInternal(houseNo, pin);
+          const voteDocId = residentPinDocId(houseNo);
+          const voteSnap = await getPollRef(pollId)
+              .collection("votes")
+              .doc(voteDocId)
+              .get();
+          if (voteSnap.exists) {
+            return res.status(200).json(
+                {ok: true, voted: true, choice: voteSnap.data().choice},
+            );
+          }
+          return res.status(200).json({ok: true, voted: false});
+        }
+
+        // ── myVotes (PIN required): one request for all poll-card statuses ──
+        if (action === "myVotes") {
+          const {houseNo, pin} = body;
+          if (!houseNo || !pin) {
+            return res.status(400).json(
+                {ok: false, error: "Missing houseNo or pin"},
+            );
+          }
+          const normalizedHouseNo = normalizeHouseNo(houseNo);
+          await verifyResidentPinInternal(normalizedHouseNo, pin);
+          const voteDocId = residentPinDocId(normalizedHouseNo);
+          const snap = await db.collection(POLLS_COLLECTION)
+              .orderBy("createdAt", "desc")
+              .limit(50)
+              .get();
+          const votes = {};
+          await Promise.all(snap.docs.map(async (pollDoc) => {
+            const voteSnap = await pollDoc.ref
+                .collection("votes")
+                .doc(voteDocId)
+                .get();
+            if (voteSnap.exists) {
+              const vote = voteSnap.data() || {};
+              votes[pollDoc.id] = {
+                voted: true,
+                choice: vote.choice,
+                votedAt: vote.votedAt || null,
+              };
+            }
+          }));
+          return res.status(200).json({
+            ok: true,
+            houseNo: normalizedHouseNo,
+            votes,
+          });
+        }
+
+        // ── results (closed OR admin) ───────────────────────────────────
+        if (action === "results") {
+          const {pollId} = body;
+          if (!pollId) {
+            return res.status(400).json(
+                {ok: false, error: "Missing pollId"},
+            );
+          }
+          const pollSnap = await getPollRef(pollId).get();
+          if (!pollSnap.exists) {
+            return res.status(404).json(
+                {ok: false, error: "Poll not found"},
+            );
+          }
+          const poll = {id: pollSnap.id, ...pollSnap.data()};
+          const now = Date.now();
+          const deadlinePassed =
+            poll.deadline && poll.deadline.toMillis() < now;
+          const closed =
+            poll.status === "closed" || deadlinePassed;
+          if (!closed && !isAdmin()) {
+            return res.status(403).json(
+                {ok: false, error: "poll_not_closed"},
+            );
+          }
+          const votesSnap = await getPollRef(pollId)
+              .collection("votes")
+              .get();
+          const total = votesSnap.size;
+          const counts = {};
+          const voteRows = [];
+          await Promise.all(votesSnap.docs.map(async (d) => {
+            const vote = d.data() || {};
+            const {choice} = vote;
+            const rowHouseNo = normalizeHouseNo(vote.houseNo || "");
+            const voteDocId = residentPinDocId(rowHouseNo);
+            const [residentSnap, signatureSnap] = await Promise.all([
+              rowHouseNo ?
+                db.collection(RESIDENTS_COLLECTION).doc(voteDocId).get() :
+                Promise.resolve(null),
+              vote.signatureRef ?
+                db.doc(vote.signatureRef).get() :
+                getResidentSignatureRef(rowHouseNo).get(),
+            ]);
+            const resident = residentSnap && residentSnap.exists ?
+              residentSnap.data() || {} :
+              {};
+            const signature = signatureSnap && signatureSnap.exists ?
+              signatureSnap.data() || {} :
+              {};
+            voteRows.push({
+              houseNo: rowHouseNo,
+              residentName: resident.name || "",
+              choice,
+              votedAt: vote.votedAt || null,
+              signedAt: vote.signedAt || null,
+              signatureRef: vote.signatureRef || "",
+              signatureDataUrl: signature.signatureDataUrl || "",
+              signatureReused: Boolean(vote.signatureReused),
+            });
+            if (poll.type === "multi" && Array.isArray(choice)) {
+              choice.forEach((c) => {
+                counts[c] = (counts[c] || 0) + 1;
+              });
+            } else if (poll.type === "rating") {
+              const key = String(choice);
+              counts[key] = (counts[key] || 0) + 1;
+            } else {
+              counts[String(choice)] = (counts[String(choice)] || 0) + 1;
+            }
+          }));
+          const totalHouses = poll.totalHouses || 68;
+          const participationPct = totalHouses > 0 ?
+            Math.round((total / totalHouses) * 100) :
+            0;
+          return res.status(200).json({
+            ok: true,
+            poll,
+            results: {counts, total, totalHouses, participationPct},
+            votes: isAdmin() ? voteRows : undefined,
+          });
+        }
+
+        return res.status(400).json({ok: false, error: "Unknown action"});
+      } catch (err) {
+        logger.error("pollAction failed", err);
+        res.status(err.status || 500).json({ok: false, error: err.message});
+      }
+    },
 );
