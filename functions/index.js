@@ -1989,6 +1989,11 @@ exports.pollAction = onRequest(
             admin.firestore.Timestamp.fromDate(new Date(poll.deadline)) : null;
 
           // ── Phase 2: multi-question survey ──────────────────────────────
+          if (poll.mode === "survey" &&
+            (!Array.isArray(poll.questions) || poll.questions.length === 0)) {
+            return res.status(400).json(
+                {ok: false, error: "Survey must have at least 1 question"});
+          }
           if (Array.isArray(poll.questions) && poll.questions.length > 0) {
             const VALID_Q_TYPES = [
               "single", "multi", "rating", "acknowledge",
@@ -2200,7 +2205,12 @@ exports.pollAction = onRequest(
           } else {
             // ── single-question mode ─────────────────────────────────────
             if (poll.type === "acknowledge") {
-              // no choice needed — just record the acknowledgment
+              // Force canonical value — reject any other string
+              if (choice !== undefined && choice !== null &&
+                  choice !== "acknowledged") {
+                return res.status(400).json(
+                    {ok: false, error: "Invalid choice for acknowledge poll"});
+              }
             } else {
               if (choice === undefined) {
                 return res.status(400).json(
@@ -2249,9 +2259,12 @@ exports.pollAction = onRequest(
             signatureReused = false;
           }
 
+          // Normalise choice for acknowledge type
+          const finalChoice = poll.type === "acknowledge" ?
+            "acknowledged" : choice;
           await voteRef.set({
             houseNo: normalizedHouseNo,
-            ...(poll.mode === "survey" ? {answers} : {choice}),
+            ...(poll.mode === "survey" ? {answers} : {choice: finalChoice}),
             votedAt: admin.firestore.FieldValue.serverTimestamp(),
             signedAt: admin.firestore.FieldValue.serverTimestamp(),
             signatureRef: `${RESIDENT_SIGNATURE_COLLECTION}/${voteDocId}`,
