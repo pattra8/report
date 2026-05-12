@@ -2332,10 +2332,15 @@ exports.pollAction = onRequest(
           const normalizedHouseNo = normalizeHouseNo(houseNo);
           await verifyResidentPinInternal(normalizedHouseNo, pin);
           const voteDocId = residentPinDocId(normalizedHouseNo);
-          const snap = await db.collection(POLLS_COLLECTION)
-              .orderBy("createdAt", "desc")
-              .limit(50)
-              .get();
+          const [snap, residentSnap] = await Promise.all([
+            db.collection(POLLS_COLLECTION)
+                .orderBy("createdAt", "desc")
+                .limit(50)
+                .get(),
+            db.collection(RESIDENTS_COLLECTION).doc(voteDocId).get(),
+          ]);
+          const residentData = residentSnap.exists ?
+            residentSnap.data() : {};
           const votes = {};
           await Promise.all(snap.docs.map(async (pollDoc) => {
             const voteSnap = await pollDoc.ref
@@ -2355,6 +2360,7 @@ exports.pollAction = onRequest(
           return res.status(200).json({
             ok: true,
             houseNo: normalizedHouseNo,
+            residentName: residentData.name || "",
             votes,
           });
         }
