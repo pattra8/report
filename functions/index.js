@@ -1977,43 +1977,97 @@ exports.pollAction = onRequest(
         // ── create (admin) ──────────────────────────────────────────────
         if (action === "create") {
           if (!isAdmin()) {
-            return res.status(403).json(
-                {ok: false, error: "Forbidden"},
-            );
+            return res.status(403).json({ok: false, error: "Forbidden"});
           }
           const {poll} = body;
-          if (!poll || !poll.title || !poll.type) {
+          if (!poll || !poll.title) {
             return res.status(400).json(
-                {ok: false, error: "Missing poll fields"},
-            );
+                {ok: false, error: "Missing poll title"});
           }
-          const validTypes = ["single", "multi", "rating"];
+
+          const deadline = poll.deadline ?
+            admin.firestore.Timestamp.fromDate(new Date(poll.deadline)) : null;
+
+          // ── Phase 2: multi-question survey ──────────────────────────────
+          if (Array.isArray(poll.questions) && poll.questions.length > 0) {
+            const VALID_Q_TYPES = [
+              "single", "multi", "rating", "acknowledge",
+              "text", "textarea", "dropdown",
+            ];
+            const questions = poll.questions.map((q, i) => {
+              if (!q.type || !VALID_Q_TYPES.includes(q.type)) {
+                throw Object.assign(
+                    new Error(`Question ${i + 1}: invalid type "${q.type}"`),
+                    {status: 400},
+                );
+              }
+              const needsOptions =
+                ["single", "multi", "dropdown"].includes(q.type);
+              if (needsOptions &&
+                (!Array.isArray(q.options) || q.options.length < 2)) {
+                throw Object.assign(
+                    new Error(
+                        `Question ${i + 1}: options required for ${q.type}`),
+                    {status: 400},
+                );
+              }
+              return {
+                id: String(q.id || `q${i + 1}`),
+                label: String(q.label || "").slice(0, 300),
+                type: q.type,
+                required: Boolean(q.required !== false),
+                options: needsOptions ?
+                  q.options.map((o) => ({
+                    label: String(o.label || o).slice(0, 100),
+                    imageUrl: String(o.imageUrl || "").slice(0, 500),
+                  })) : null,
+                maxChoices: q.type === "multi" ?
+                  (Number(q.maxChoices) || 2) : null,
+                imageUrl: String(q.imageUrl || "").slice(0, 500),
+              };
+            });
+            const docRef = await db.collection(POLLS_COLLECTION).add({
+              title: String(poll.title).slice(0, 200),
+              description: String(poll.description || "").slice(0, 1000),
+              imageUrl: String(poll.imageUrl || "").slice(0, 500),
+              mode: "survey",
+              questions,
+              deadline,
+              totalHouses: Number(poll.totalHouses) || 68,
+              status: "active",
+              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+            return res.status(200).json({ok: true, pollId: docRef.id});
+          }
+
+          // ── Phase 1: single-question poll (backward compat) ─────────────
+          if (!poll.type) {
+            return res.status(400).json(
+                {ok: false, error: "Missing poll type"});
+          }
+          const validTypes = ["single", "multi", "rating", "acknowledge"];
           if (!validTypes.includes(poll.type)) {
             return res.status(400).json(
-                {ok: false, error: "Invalid poll type"},
-            );
+                {ok: false, error: "Invalid poll type"});
           }
-          if (
-            poll.type !== "rating" &&
-            (!Array.isArray(poll.options) || poll.options.length < 2)
-          ) {
-            return res.status(400).json(
-                {ok: false, error: "options required for single/multi"},
-            );
+          const needsOptions = ["single", "multi"].includes(poll.type);
+          if (needsOptions &&
+            (!Array.isArray(poll.options) || poll.options.length < 2)) {
+            return res.status(400).json({ok: false, error: "options required"});
           }
-          const deadline = poll.deadline ?
-            admin.firestore.Timestamp.fromDate(new Date(poll.deadline)) :
-            null;
           const docRef = await db.collection(POLLS_COLLECTION).add({
             title: String(poll.title).slice(0, 200),
             description: String(poll.description || "").slice(0, 1000),
+            imageUrl: String(poll.imageUrl || "").slice(0, 500),
+            mode: "single",
             type: poll.type,
-            options: poll.type === "rating" ?
-              null :
-              poll.options.map((o) => String(o).slice(0, 100)),
+            options: needsOptions ?
+              poll.options.map((o) => ({
+                label: String(o.label || o).slice(0, 100),
+                imageUrl: String(o.imageUrl || "").slice(0, 500),
+              })) : null,
             maxChoices: poll.type === "multi" ?
-              (Number(poll.maxChoices) || 2) :
-              null,
+              (Number(poll.maxChoices) || 2) : null,
             deadline,
             totalHouses: Number(poll.totalHouses) || 68,
             status: "active",
@@ -2065,72 +2119,120 @@ exports.pollAction = onRequest(
 
         // ── vote (PIN required) ─────────────────────────────────────────
         if (action === "vote") {
-          const {houseNo, pin, pollId, choice} = body;
-          if (!houseNo || !pin || !pollId || choice === undefined) {
+          const {houseNo, pin, pollId} = body;
+          // answers = survey mode  |  choice = single-question mode
+          const answers = body.answers;
+          const choice = body.choice;
+          if (!houseNo || !pin || !pollId) {
             return res.status(400).json(
-                {ok: false, error: "Missing houseNo, pin, pollId or choice"},
+                {ok: false, error: "Missing houseNo, pin, or pollId"},
             );
           }
           const normalizedHouseNo = normalizeHouseNo(houseNo);
           await verifyResidentPinInternal(houseNo, pin);
           const pollSnap = await getPollRef(pollId).get();
           if (!pollSnap.exists) {
-            return res.status(404).json(
-                {ok: false, error: "Poll not found"},
-            );
+            return res.status(404).json({ok: false, error: "Poll not found"});
           }
           const poll = pollSnap.data();
           if (poll.status !== "active") {
-            return res.status(400).json(
-                {ok: false, error: "Poll is closed"},
-            );
+            return res.status(400).json({ok: false, error: "Poll is closed"});
           }
           const deadlineMs = poll.deadline ? poll.deadline.toMillis() : null;
           if (deadlineMs && Date.now() > deadlineMs) {
             await getPollRef(pollId).update({status: "closed"});
             return res.status(400).json(
-                {ok: false, error: "Poll deadline has passed"},
-            );
+                {ok: false, error: "Poll deadline has passed"});
           }
           const voteDocId = residentPinDocId(houseNo);
-          const voteRef = getPollRef(pollId)
-              .collection("votes")
-              .doc(voteDocId);
+          const voteRef = getPollRef(pollId).collection("votes").doc(voteDocId);
           const existing = await voteRef.get();
           if (existing.exists) {
-            return res.status(409).json(
-                {ok: false, error: "already_voted"},
-            );
+            return res.status(409).json({ok: false, error: "already_voted"});
           }
-          // validate choice
-          if (poll.type === "single") {
-            if (
-              !poll.options.includes(String(choice))
-            ) {
-              return res.status(400).json(
-                  {ok: false, error: "Invalid choice"},
-              );
+
+          // ── helper: validate one question answer ───────────────────────
+          const validateAnswer = (q, ans) => {
+            const optionLabels = (q.options || []).map((o) =>
+              typeof o === "object" ? o.label : String(o));
+            if (q.type === "acknowledge") return true;
+            if (q.type === "single") {
+              return optionLabels.includes(String(ans));
             }
-          } else if (poll.type === "multi") {
-            if (
-              !Array.isArray(choice) ||
-              choice.length === 0 ||
-              choice.length > (poll.maxChoices || 2) ||
-              !choice.every((c) => poll.options.includes(String(c)))
-            ) {
-              return res.status(400).json(
-                  {ok: false, error: "Invalid choice"},
-              );
+            if (q.type === "multi") {
+              return Array.isArray(ans) && ans.length > 0 &&
+                ans.length <= (q.maxChoices || 99) &&
+                ans.every((a) => optionLabels.includes(String(a)));
             }
-          } else if (poll.type === "rating") {
-            const r = Number(choice);
-            if (!Number.isInteger(r) || r < 1 || r > 5) {
+            if (q.type === "rating") {
+              const r = Number(ans);
+              return Number.isInteger(r) && r >= 1 && r <= 5;
+            }
+            if (q.type === "dropdown") {
+              return optionLabels.includes(String(ans));
+            }
+            if (q.type === "text" || q.type === "textarea") {
+              return typeof ans === "string" && ans.trim().length <= 1000;
+            }
+            return false;
+          };
+
+          // ── survey mode (multi-question) ───────────────────────────────
+          if (poll.mode === "survey") {
+            if (!answers || typeof answers !== "object") {
               return res.status(400).json(
-                  {ok: false, error: "Rating must be 1-5"},
-              );
+                  {ok: false, error: "Missing answers"});
+            }
+            for (const q of poll.questions || []) {
+              const ans = answers[q.id];
+              const empty = ans === undefined || ans === null || ans === "";
+              if (q.required !== false && empty) {
+                return res.status(400).json(
+                    {ok: false, error: `Question "${q.label}" is required`});
+              }
+              if (ans !== undefined && ans !== null && ans !== "") {
+                if (!validateAnswer(q, ans)) {
+                  return res.status(400).json(
+                      {ok: false, error: `Invalid answer for "${q.label}"`});
+                }
+              }
+            }
+          } else {
+            // ── single-question mode ─────────────────────────────────────
+            if (poll.type === "acknowledge") {
+              // no choice needed — just record the acknowledgment
+            } else {
+              if (choice === undefined) {
+                return res.status(400).json(
+                    {ok: false, error: "Missing choice"});
+              }
+              const optionLabels = (poll.options || []).map((o) =>
+                typeof o === "object" ? o.label : String(o));
+              if (poll.type === "single" || poll.type === "dropdown") {
+                if (!optionLabels.includes(String(choice))) {
+                  return res.status(400).json(
+                      {ok: false, error: "Invalid choice"});
+                }
+              } else if (poll.type === "multi") {
+                if (
+                  !Array.isArray(choice) || choice.length === 0 ||
+                  choice.length > (poll.maxChoices || 2) ||
+                  !choice.every((c) => optionLabels.includes(String(c)))
+                ) {
+                  return res.status(400).json(
+                      {ok: false, error: "Invalid choice"});
+                }
+              } else if (poll.type === "rating") {
+                const r = Number(choice);
+                if (!Number.isInteger(r) || r < 1 || r > 5) {
+                  return res.status(400).json(
+                      {ok: false, error: "Rating must be 1-5"});
+                }
+              }
             }
           }
 
+          // ── save signature ─────────────────────────────────────────────
           const signatureRef = getResidentSignatureRef(normalizedHouseNo);
           const signatureSnap = await signatureRef.get();
           let signatureReused = signatureSnap.exists;
@@ -2149,19 +2251,14 @@ exports.pollAction = onRequest(
 
           await voteRef.set({
             houseNo: normalizedHouseNo,
-            choice,
+            ...(poll.mode === "survey" ? {answers} : {choice}),
             votedAt: admin.firestore.FieldValue.serverTimestamp(),
             signedAt: admin.firestore.FieldValue.serverTimestamp(),
             signatureRef: `${RESIDENT_SIGNATURE_COLLECTION}/${voteDocId}`,
             signatureReused,
             ip: req.ip || "",
           });
-          await writeAuditLog(
-              "poll_vote",
-              houseNo,
-              {pollId, ip: req.ip},
-              true,
-          );
+          await writeAuditLog("poll_vote", houseNo, {pollId, ip: req.ip}, true);
           return res.status(200).json({ok: true});
         }
 
@@ -2181,9 +2278,11 @@ exports.pollAction = onRequest(
               .doc(voteDocId)
               .get();
           if (voteSnap.exists) {
-            return res.status(200).json(
-                {ok: true, alreadyVoted: true, choice: voteSnap.data().choice},
-            );
+            const vd = voteSnap.data() || {};
+            return res.status(200).json({
+              ok: true, alreadyVoted: true,
+              choice: vd.choice, answers: vd.answers,
+            });
           }
           const signatureSnap =
             await getResidentSignatureRef(normalizedHouseNo).get();
@@ -2213,9 +2312,11 @@ exports.pollAction = onRequest(
               .doc(voteDocId)
               .get();
           if (voteSnap.exists) {
-            return res.status(200).json(
-                {ok: true, voted: true, choice: voteSnap.data().choice},
-            );
+            const vd = voteSnap.data() || {};
+            return res.status(200).json({
+              ok: true, voted: true,
+              choice: vd.choice, answers: vd.answers,
+            });
           }
           return res.status(200).json({ok: true, voted: false});
         }
@@ -2246,6 +2347,7 @@ exports.pollAction = onRequest(
               votes[pollDoc.id] = {
                 voted: true,
                 choice: vote.choice,
+                answers: vote.answers,
                 votedAt: vote.votedAt || null,
               };
             }
@@ -2286,11 +2388,12 @@ exports.pollAction = onRequest(
               .collection("votes")
               .get();
           const total = votesSnap.size;
+          // counts: single-question → {option:n}
+          // survey → {qId: {option:n}}
           const counts = {};
           const voteRows = [];
           await Promise.all(votesSnap.docs.map(async (d) => {
             const vote = d.data() || {};
-            const {choice} = vote;
             const rowHouseNo = normalizeHouseNo(vote.houseNo || "");
             const voteDocId = residentPinDocId(rowHouseNo);
             const [residentSnap, signatureSnap] = await Promise.all([
@@ -2302,36 +2405,71 @@ exports.pollAction = onRequest(
                 getResidentSignatureRef(rowHouseNo).get(),
             ]);
             const resident = residentSnap && residentSnap.exists ?
-              residentSnap.data() || {} :
-              {};
+              residentSnap.data() || {} : {};
             const signature = signatureSnap && signatureSnap.exists ?
-              signatureSnap.data() || {} :
-              {};
-            voteRows.push({
-              houseNo: rowHouseNo,
-              residentName: resident.name || "",
-              choice,
-              votedAt: vote.votedAt || null,
-              signedAt: vote.signedAt || null,
-              signatureRef: vote.signatureRef || "",
-              signatureDataUrl: signature.signatureDataUrl || "",
-              signatureReused: Boolean(vote.signatureReused),
-            });
-            if (poll.type === "multi" && Array.isArray(choice)) {
-              choice.forEach((c) => {
-                counts[c] = (counts[c] || 0) + 1;
+              signatureSnap.data() || {} : {};
+
+            if (poll.mode === "survey") {
+              // Aggregate per-question counts
+              const ans = vote.answers || {};
+              for (const q of poll.questions || []) {
+                if (!counts[q.id]) counts[q.id] = {};
+                const a = ans[q.id];
+                if (a === undefined || a === null) continue;
+                if (q.type === "acknowledge") {
+                  counts[q.id]["ทราบแล้ว"] =
+                    (counts[q.id]["ทราบแล้ว"] || 0) + 1;
+                } else if (q.type === "multi" && Array.isArray(a)) {
+                  a.forEach((c) => {
+                    counts[q.id][c] = (counts[q.id][c] || 0) + 1;
+                  });
+                } else if (q.type === "rating") {
+                  const k = String(a);
+                  counts[q.id][k] = (counts[q.id][k] || 0) + 1;
+                } else if (q.type === "text" || q.type === "textarea") {
+                  // store raw texts array for admin
+                  if (!counts[q.id].__texts) counts[q.id].__texts = [];
+                  counts[q.id].__texts.push({houseNo: rowHouseNo, text: a});
+                } else {
+                  counts[q.id][String(a)] = (counts[q.id][String(a)] || 0) + 1;
+                }
+              }
+              voteRows.push({
+                houseNo: rowHouseNo,
+                residentName: resident.name || "",
+                answers: vote.answers,
+                votedAt: vote.votedAt || null,
+                signatureDataUrl: signature.signatureDataUrl || "",
+                signatureReused: Boolean(vote.signatureReused),
               });
-            } else if (poll.type === "rating") {
-              const key = String(choice);
-              counts[key] = (counts[key] || 0) + 1;
             } else {
-              counts[String(choice)] = (counts[String(choice)] || 0) + 1;
+              const {choice} = vote;
+              voteRows.push({
+                houseNo: rowHouseNo,
+                residentName: resident.name || "",
+                choice,
+                votedAt: vote.votedAt || null,
+                signedAt: vote.signedAt || null,
+                signatureRef: vote.signatureRef || "",
+                signatureDataUrl: signature.signatureDataUrl || "",
+                signatureReused: Boolean(vote.signatureReused),
+              });
+              if (poll.type === "acknowledge") {
+                counts["ทราบแล้ว"] = (counts["ทราบแล้ว"] || 0) + 1;
+              } else if (poll.type === "multi" && Array.isArray(choice)) {
+                choice.forEach((c) => {
+                  counts[c] = (counts[c] || 0) + 1;
+                });
+              } else if (poll.type === "rating") {
+                counts[String(choice)] = (counts[String(choice)] || 0) + 1;
+              } else {
+                counts[String(choice)] = (counts[String(choice)] || 0) + 1;
+              }
             }
           }));
           const totalHouses = poll.totalHouses || 68;
           const participationPct = totalHouses > 0 ?
-            Math.round((total / totalHouses) * 100) :
-            0;
+            Math.round((total / totalHouses) * 100) : 0;
           return res.status(200).json({
             ok: true,
             poll,
