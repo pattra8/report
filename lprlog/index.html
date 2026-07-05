@@ -22,21 +22,70 @@
     body {
       font-family:'IBM Plex Sans Thai', system-ui, sans-serif;
       background:var(--bg); color:var(--text-body);
-      min-height:100dvh; display:flex; justify-content:center;
-      padding:18px 14px 70px;
+      min-height:100dvh; padding:0 0 70px;
     }
-    .wrap { width:100%; max-width:540px; }
-    .navbar { display:flex; align-items:center; justify-content:space-between;
-      gap:10px; padding:10px 4px; margin-bottom:6px; border-bottom:1px solid var(--border-soft); }
-    .nav-home { display:inline-flex; align-items:center; gap:6px; font-size:14px;
-      font-weight:600; color:var(--accent-text); text-decoration:none; }
-    .nav-home:hover { color:var(--accent-deep); }
-    .nav-home .arrow { font-size:16px; line-height:1; }
-    .logout { font-size:12.5px; color:var(--text-muted); background:none; border:none;
-      cursor:pointer; text-decoration:underline; }
-    header { text-align:center; margin:6px 0 16px; }
+    .wrap { width:100%; max-width:540px; margin:0 auto; padding:0 14px; }
+    /* ── Canonical Pattra Villa 8 header (matches pattra8.com) ── */
+    .site-header {
+      display:flex; align-items:center; justify-content:space-between; gap:12px;
+      background:var(--bg); border-bottom:1px solid var(--border);
+      padding:0 24px; height:68px; position:sticky; top:0; z-index:100;
+    }
+    .brand { display:flex; flex-direction:column; text-decoration:none; }
+    .brand-mark {
+      font-family:"Cormorant Garamond", serif; font-weight:700; font-size:21px;
+      color:var(--text); letter-spacing:.2em;
+    }
+    .brand-sub {
+      font-size:10px; color:var(--text-muted); letter-spacing:.18em;
+      text-transform:uppercase; margin-top:1px;
+    }
+    .header-actions { display:flex; align-items:center; gap:10px; }
+    .identity-pill {
+      display:flex; align-items:center; gap:8px; cursor:pointer;
+      background:#f7e6cd; border:1px solid #d4913f; border-radius:99px;
+      padding:4px 14px 4px 6px; white-space:nowrap;
+    }
+    .pill-avatar {
+      width:28px; height:28px; border-radius:50%; flex-shrink:0;
+      background:var(--accent); color:#fff; display:flex; align-items:center;
+      justify-content:center; font-size:.8rem; font-weight:800;
+    }
+    .pill-house { font-size:.8rem; font-weight:700; color:var(--text); line-height:1.2; }
+    .pill-name { font-size:.72rem; color:var(--text-muted); line-height:1.2; }
+    .hero { text-align:center; margin:22px 0 4px; }
+    .ornament { display:flex; align-items:center; justify-content:center; gap:12px; margin-bottom:14px; }
+    .o-line { width:56px; height:1px; background:linear-gradient(90deg,transparent,var(--accent)); }
+    .o-line.r { background:linear-gradient(90deg,var(--accent),transparent); }
+    .o-diamond { width:6px; height:6px; background:var(--accent); transform:rotate(45deg); opacity:.8; }
     .title { font-size:23px; font-weight:700; color:var(--text); letter-spacing:-0.01em; }
     .subtitle { font-size:13px; color:var(--text-muted); margin-top:4px; line-height:1.5; }
+
+    /* plate search */
+    .searchbox {
+      background:var(--card); border:1px solid var(--border); border-radius:var(--radius);
+      box-shadow:var(--shadow); padding:14px; margin:12px 0 10px;
+    }
+    .search-label { display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+      font-size:13px; font-weight:700; color:var(--text); margin-bottom:8px; }
+    .search-label small { font-size:11.5px; font-weight:500; color:var(--text-muted); }
+    .search-row { display:flex; gap:8px; }
+    .search-row input {
+      flex:1; min-width:0; font-family:inherit; font-size:16px; font-weight:600;
+      padding:13px 14px; border:1.5px solid var(--border); border-radius:12px;
+      background:var(--bg-soft); color:var(--text); box-shadow:inset 0 1px 0 rgba(255,255,255,.35);
+    }
+    .search-row input:focus { outline:none; border-color:var(--accent); background:#fff; }
+    .search-clear {
+      width:64px; min-width:64px; border:none; border-radius:12px; cursor:pointer;
+      font-family:inherit; font-size:13px; font-weight:700; color:var(--accent-text);
+      background:var(--warn-bg);
+    }
+    .search-clear:disabled { opacity:.45; cursor:default; }
+    .search-hint {
+      font-size:12.5px; line-height:1.5; color:var(--text-muted); margin-top:8px;
+    }
+    .search-hint strong { color:var(--text-soft); }
 
     /* date bar */
     .datebar { display:flex; gap:8px; align-items:center; }
@@ -71,6 +120,9 @@
     .stat-ico { font-size:17px; line-height:1; }
     .stat-num { font-size:24px; font-weight:700; line-height:1.1; margin-top:3px; }
     .stat-lbl { font-size:12px; color:var(--text-muted); margin-top:3px; line-height:1.3; }
+    .stat-io { font-size:11px; margin-top:4px; line-height:1.3; }
+    .stat-io .io-in { color:var(--ok); font-weight:600; }
+    .stat-io .io-out { color:var(--err); font-weight:600; }
     .stat-go { font-size:10.5px; color:var(--accent-text); margin-top:5px; opacity:0.85; }
     .stat.res .stat-num { color:var(--ok); }
     .stat.vis .stat-num { color:var(--accent-text); }
@@ -154,6 +206,73 @@
     .cmt-save:disabled { opacity:.55; cursor:default; }
     .cmt-status { font-size:12.5px; color:var(--ok); font-weight:600; }
 
+    /* tappable row → photo evidence */
+    .item.tap { cursor:pointer; transition:background .12s; }
+    .item.tap:hover, .item.tap:active { background:var(--bg-soft); }
+    .row-go { color:var(--text-muted); font-size:17px; font-weight:700; line-height:1;
+      margin-left:-2px; flex:none; }
+
+    /* search results */
+    .search-summary {
+      background:linear-gradient(180deg, #fff, #fbf6eb); border:1px solid var(--border);
+      border-radius:var(--radius); box-shadow:var(--shadow); padding:15px 16px;
+      margin-bottom:12px;
+    }
+    .search-summary-top { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
+    .search-summary-plate { font-family:'IBM Plex Mono', monospace; font-size:20px;
+      font-weight:700; color:var(--text); letter-spacing:.02em; }
+    .search-summary-tag { display:inline-flex; align-items:center; gap:6px; margin-top:6px;
+      font-size:12px; color:var(--text-soft); }
+    .search-summary-stats { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; margin-top:12px; }
+    .search-stat { background:var(--card); border:1px solid var(--border-soft); border-radius:12px;
+      padding:10px 11px; }
+    .search-stat .lbl { font-size:11px; color:var(--text-muted); }
+    .search-stat .val { font-size:15px; font-weight:700; color:var(--text); margin-top:2px; line-height:1.25; }
+    .search-groups { display:flex; flex-direction:column; gap:10px; }
+    .search-event { align-items:flex-start; gap:12px; }
+    .search-event .it-main { align-items:flex-start; gap:8px; }
+    .search-time {
+      display:inline-flex; align-items:center; justify-content:center; min-width:74px;
+      height:30px; padding:0 10px; border-radius:8px; background:var(--bg-soft);
+      border:1px solid var(--border-soft); font-family:'IBM Plex Mono', monospace;
+      font-size:13px; font-weight:700; color:var(--text);
+    }
+    .search-meta { display:flex; flex-wrap:wrap; gap:6px 8px; align-items:center; }
+    .search-dir {
+      display:inline-flex; align-items:center; justify-content:center; min-width:54px;
+      padding:4px 8px; border-radius:999px; font-size:12px; font-weight:700;
+      background:var(--neutral-bg); color:var(--text-soft);
+    }
+    .search-dir.in { background:var(--ok-bg); color:var(--ok); }
+    .search-dir.out { background:var(--err-bg); color:var(--err); }
+    .search-camera { font-size:12.5px; color:var(--text-muted); }
+    .search-empty { padding:24px 16px; text-align:center; color:var(--text-muted); font-size:13.5px; }
+
+    /* photo evidence lightbox */
+    .pbx { position:fixed; inset:0; background:rgba(40,30,18,0.55);
+      display:none; align-items:flex-start; justify-content:center;
+      padding:24px 14px; z-index:60; overflow-y:auto; }
+    .pbx.open { display:flex; }
+    .pbx-card { background:var(--card); border-radius:18px; width:100%; max-width:420px;
+      box-shadow:var(--shadow); padding:18px 18px 20px; position:relative; }
+    .pbx-x { position:absolute; top:12px; right:12px; width:32px; height:32px;
+      border:none; border-radius:50%; background:var(--bg-soft); color:var(--text-soft);
+      font-size:15px; cursor:pointer; line-height:1; }
+    .pbx-x:hover { background:var(--neutral-bg); }
+    .pbx-head { display:flex; flex-direction:column; gap:3px; margin:2px 36px 14px 2px; }
+    .pbx-plate { font-family:'IBM Plex Mono', monospace; font-size:18px; font-weight:700;
+      color:var(--text); letter-spacing:0.02em; }
+    .pbx-sub { font-size:13px; color:var(--text-muted); }
+    .pbx-item { margin-bottom:14px; }
+    .pbx-item:last-child { margin-bottom:0; }
+    .pbx-cap { font-size:13px; font-weight:600; margin-bottom:6px; }
+    .pbx-cap .pbx-time { color:var(--text-muted); font-weight:400; font-size:12.5px; }
+    .pbx-img { display:block; width:100%; border-radius:12px; border:1px solid var(--border); }
+    .pbx-noimg { font-size:12.5px; color:var(--text-muted); background:var(--bg-soft);
+      border-radius:12px; padding:20px; text-align:center; }
+    .pbx-empty { font-size:13.5px; color:var(--text-muted); text-align:center; padding:24px 0; }
+    .pbx-foot { font-size:11.5px; color:var(--text-muted); text-align:center; margin-top:6px; }
+
     /* login */
     .overlay { position:fixed; inset:0; background:rgba(40,30,18,0.45);
       display:none; align-items:center; justify-content:center; padding:20px; z-index:50; }
@@ -192,15 +311,34 @@
   </style>
 </head>
 <body>
+  <header class="site-header">
+    <a class="brand" href="/">
+      <div class="brand-mark">Pattra Villa 8</div>
+      <div class="brand-sub">Resident Services</div>
+    </a>
+    <div class="header-actions"><div id="headerIdentity"></div></div>
+  </header>
   <div class="wrap">
-    <div class="navbar">
-      <a class="nav-home" href="/"><span class="arrow">←</span> หน้าแรก</a>
-      <button id="logout" class="logout" style="display:none">ออกจากระบบ</button>
-    </div>
-    <header>
+    <section class="hero">
+      <div class="ornament"><span class="o-line"></span><span class="o-diamond"></span><span class="o-line r"></span></div>
       <div class="title">LPR Log รายวัน</div>
       <div class="subtitle">บันทึกรถเข้า-ออก แยกลูกบ้าน · รถภายนอก · สแกนไม่พบ</div>
-    </header>
+    </section>
+
+    <section class="searchbox">
+      <div class="search-label">
+        <span>ค้นหาเลขทะเบียน</span>
+        <small>ค้นหาข้ามวันอัตโนมัติ</small>
+      </div>
+      <div class="search-row">
+        <input id="plateSearch" type="text" inputmode="text" autocomplete="off"
+          placeholder="พิมพ์เลขทะเบียน เช่น 1กข1234" />
+        <button id="plateClear" class="search-clear" type="button" disabled>ล้าง</button>
+      </div>
+      <div id="searchHint" class="search-hint">
+        พิมพ์เลขทะเบียนให้ครบ แล้วระบบจะแสดงช่วงวันที่และเวลาเข้าออกของคันนั้นให้ทันที
+      </div>
+    </section>
 
     <div class="datebar">
       <button id="prev" class="navbtn" title="วันก่อนหน้า">‹</button>
@@ -233,6 +371,15 @@
     </div>
   </div>
 
+  <div id="photobox" class="pbx">
+    <div class="pbx-card">
+      <button id="pbxX" class="pbx-x" title="ปิด">✕</button>
+      <div id="pbxHead" class="pbx-head"></div>
+      <div id="pbxBody" class="pbx-body"></div>
+      <div class="pbx-foot">แตะรูปเพื่อเปิดเต็มจอ · ภาพจากกล้องเก็บไว้เป็นหลักฐาน</div>
+    </div>
+  </div>
+
   <script>
   (function () {
     'use strict';
@@ -245,12 +392,41 @@
         elCap=document.getElementById('daycap'), elOverlay=document.getElementById('overlay'),
         elSuffix=document.getElementById('mSuffix'), elPin=document.getElementById('mPin'),
         elBtn=document.getElementById('mBtn'), elMErr=document.getElementById('mErr'),
-        elLogout=document.getElementById('logout');
+        elIdentity=document.getElementById('headerIdentity'),
+        elSearch=document.getElementById('plateSearch'),
+        elSearchClear=document.getElementById('plateClear'),
+        elSearchHint=document.getElementById('searchHint');
 
     function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){
       return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+    function renderIdentity(s){
+      if(!s){ elIdentity.innerHTML=''; return; }
+      var name=s.residentName||'';
+      var initial=((name||s.houseNo||'').match(/[\dA-Za-z฀-๿]/)||['P'])[0].toUpperCase();
+      elIdentity.innerHTML='<div class="identity-pill" id="idPill" title="ออกจากระบบ">'+
+        '<div class="pill-avatar">'+esc(initial)+'</div><div>'+
+        '<div class="pill-house">บ้าน '+esc(s.houseNo)+'</div>'+
+        '<div class="pill-name">'+esc(name||'กรรมการ')+'</div></div></div>';
+      var p=document.getElementById('idPill');
+      if(p) p.addEventListener('click',function(){ localStorage.removeItem(SESSION_KEY); renderIdentity(null); showLogin(); });
+    }
     function todayStr(){ var d=new Date(); return d.getFullYear()+'-'+
       String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+
+    function normalizePlateSearch(raw){
+      return String(raw||'').normalize('NFKC')
+        .replace(/[\u200B-\u200D\uFEFF]/g, '')
+        .replace(/[\s-]/g, '')
+        .trim()
+        .toUpperCase();
+    }
+
+    function formatBangkokDateLabel(epoch){
+      return new Intl.DateTimeFormat('th-TH',{
+        weekday:'long', day:'numeric', month:'long', year:'numeric',
+        timeZone:'Asia/Bangkok'
+      }).format(new Date(epoch));
+    }
 
     /* fix3: vehicle color → Thai (brand stays English) */
     var COLOR_PHRASE={'dark blue':'น้ำเงินเข้ม','light blue':'ฟ้า','dark gray':'เทาเข้ม',
@@ -264,12 +440,18 @@
       var th = COLOR_PHRASE[s] || s.split(/\s+/).map(function(w){return COLOR_TH[w]||w;}).join(' ');
       return 'สี'+th; }
 
+    var currentMode='daily';
+    var lastDailyReport=null;
+    var lastSearchReport=null;
+    var searchTimer=null;
+    var searchToken=0;
+
     /* session */
     function getSession(){ try{ var s=JSON.parse(localStorage.getItem(SESSION_KEY)||'null');
       if(!s||Number(s.expiresAt)<=Date.now()) return null; return s; }catch(e){return null;} }
     function storeSession(h,p){ localStorage.setItem(SESSION_KEY, JSON.stringify({
       houseNo:h, pin:p, expiresAt:Date.now()+TTL })); }
-    function showLogin(msg){ elOverlay.classList.add('open'); elLogout.style.display='none';
+    function showLogin(msg){ elOverlay.classList.add('open'); renderIdentity(null);
       if(msg){ elMErr.textContent=msg; elMErr.classList.add('show'); }
       setTimeout(function(){ elSuffix.focus(); }, 80); }
     function hideLogin(){ elOverlay.classList.remove('open'); elMErr.classList.remove('show'); }
@@ -283,11 +465,12 @@
       var win = report && report.timeRange ? ('พบรถ '+esc(report.timeRange)+' น.') :
         (isToday ? 'ยังไม่มีรถผ่านวันนี้' : 'ไม่มีข้อมูลวันนี้');
       elCap.innerHTML = esc(label) +
-        '<span class="win">🕖 วันเริ่มนับ 07:00 น.'+(isToday?' (วันนี้ถึงปัจจุบัน)':'')+' · '+win+'</span>';
+        '<span class="win">🕛 ทั้งวัน 00:00–23:59 น.'+(isToday?' (ถึงปัจจุบัน)':'')+' · '+win+'</span>';
     }
 
     function displayPlate(plate){
-      return String(plate||'').replace(/\s+/g,'');
+      var compact = String(plate||'').replace(/\s+/g,'');
+      return compact.replace(/^(.+?)(\d{1,4})$/, '$1 $2');
     }
 
     /* in/out — compact single line */
@@ -299,13 +482,17 @@
       return '<div class="io">'+inT+' <span class="io-arrow">→</span> '+outT+'</div>';
     }
 
+    /* photo-evidence registry: maps a row to a click id (rebuilt each render) */
+    var CAPS={}, capSeq=0;
+    function regRow(r){ var id='c'+(capSeq++); CAPS[id]=r; return id; }
+
     function residentItems(rows){
       if(!rows.length) return '<div class="empty">ไม่มีรถลูกบ้านในวันนี้</div>';
       return rows.map(function(r){
-        return '<div class="item"><div class="it-main">'+
+        return '<div class="item tap" data-cap="'+regRow(r)+'"><div class="it-main">'+
           '<span class="plate">'+esc(displayPlate(r.plate))+'</span>'+
           '<div class="it-sub">บ้าน <span class="house">'+(r.houses||[]).map(esc).join(', ')+'</span></div>'+
-          '</div>'+ioBlock(r)+'</div>'; }).join('');
+          '</div>'+ioBlock(r)+'<span class="row-go">›</span></div>'; }).join('');
     }
     function visitorItems(rows){
       if(!rows.length) return '<div class="empty">ไม่มีรถภายนอกในวันนี้</div>';
@@ -317,9 +504,9 @@
             (brand?'<span class="brand">'+esc(brand)+'</span>':'')+
             (cth?'<span class="color-th">'+(brand?' · ':'')+esc(cth)+'</span>':'')+'</div>'
           : '<div class="it-sub" style="opacity:.7">ไม่มีข้อมูลรถ</div>';
-        return '<div class="item"><div class="it-main">'+
+        return '<div class="item tap" data-cap="'+regRow(r)+'"><div class="it-main">'+
           '<span class="plate">'+esc(displayPlate(r.plate))+'</span>'+carline+
-          '</div>'+ioBlock(r)+'</div>'; }).join('');
+          '</div>'+ioBlock(r)+'<span class="row-go">›</span></div>'; }).join('');
     }
     function unreadableItems(rows){
       if(!rows.length) return '<div class="empty">ไม่มีรายการสแกนไม่พบ 🎉</div>';
@@ -342,8 +529,8 @@
         '</div>'; }).join('');
     }
 
-    function acc(key, cls, title, count, inner){
-      return '<div class="acc '+cls+'" id="sec-'+key+'">'+
+    function acc(key, cls, title, count, inner, open){
+      return '<div class="acc '+cls+(open?' open':'')+'" id="sec-'+key+'">'+
         '<button class="acc-head" data-key="'+key+'">'+
           '<span class="acc-title">'+title+'</span>'+
           '<span class="acc-meta"><span class="acc-cnt">'+esc(count)+'</span>'+
@@ -351,21 +538,24 @@
         '</button><div class="acc-body">'+inner+'</div></div>';
     }
 
-    var lastReport=null;
-    function render(r){
-      lastReport=r; renderCaption(r);
+    function renderDaily(r){
+      lastDailyReport=r; currentMode='daily';
+      renderCaption(r); CAPS={}; capSeq=0;
       var hero = '<div class="hero"><div class="hero-cap">รถผ่านเข้า-ออกทั้งหมด</div>'+
         '<div class="hero-num">'+r.totalDetections+'</div>'+
         '<div class="hero-unit">ครั้ง · นับทุกครั้งที่ผ่านกล้อง (เข้า+ออก)</div></div>';
       var stats = '<div class="stats">'+
         '<div class="stat res" data-target="res"><div class="stat-ico">🏠</div>'+
           '<div class="stat-num">'+r.residentCars+'</div><div class="stat-lbl">ลูกบ้าน (คัน)</div>'+
+          '<div class="stat-io"><span class="io-in">เข้า '+(r.residentEntryCars||0)+'</span> · <span class="io-out">ออก '+(r.residentExitCars||0)+'</span></div>'+
           '<div class="stat-go">ดูรายการ →</div></div>'+
         '<div class="stat vis" data-target="vis"><div class="stat-ico">🚗</div>'+
           '<div class="stat-num">'+r.externalCars+'</div><div class="stat-lbl">ภายนอก (คัน)</div>'+
+          '<div class="stat-io"><span class="io-in">เข้า '+(r.externalEntryCars||0)+'</span> · <span class="io-out">ออก '+(r.externalExitCars||0)+'</span></div>'+
           '<div class="stat-go">ดูรายการ →</div></div>'+
         '<div class="stat unk" data-target="unk"><div class="stat-ico">❓</div>'+
           '<div class="stat-num">'+r.unreadableDetections+'</div><div class="stat-lbl">สแกนไม่พบ</div>'+
+          '<div class="stat-io" style="visibility:hidden">·</div>'+
           '<div class="stat-go">ดูรายการ →</div></div>'+
         '</div>';
       var legend = '<div class="legend">'+
@@ -378,6 +568,93 @@
         acc('vis','vis','🚗 รถภายนอก (visitor)', r.externalCars+' คัน', visitorItems(r.externalPlates||[]))+
         acc('unk','unk','❓ สแกนไม่พบ', r.unreadableDetections+' ครั้ง', unreadableItems(r.unreadableEvents||[]));
       elBody.innerHTML = hero + stats + legend + sections;
+      setSearchHint('พิมพ์เลขทะเบียนเพื่อค้นหาข้ามวันหรือแตะล้างเพื่อกลับมาดูรายวัน', 'neutral');
+    }
+
+    function renderSearchCaption(report){
+      var s=report.summary||{};
+      var label = s.displayPlate || displayPlate(s.plate || '');
+      var range = s.firstLabel && s.lastLabel ? (s.firstLabel+' → '+s.lastLabel) : 'ไม่มีข้อมูล';
+      elCap.innerHTML = esc(label || 'ผลการค้นหา') +
+        '<span class="win">พบ '+esc(s.totalEvents||0)+' ครั้ง · '+esc(s.totalDays||0)+' วัน · '+esc(range)+'</span>';
+    }
+
+    function setSearchHint(text, tone){
+      if(!elSearchHint) return;
+      elSearchHint.style.color = tone === 'warn' ? 'var(--err)' :
+        tone === 'ok' ? 'var(--ok)' : 'var(--text-muted)';
+      elSearchHint.textContent = text;
+    }
+
+    function searchEventRow(group, event){
+      var row = {
+        plate: group.displayPlate || displayPlate(group.plate || ''),
+        houses: group.houses || [],
+        vehicleVision: group.vehicleVision || null,
+        captures: [{
+          label: event.directionLabel || 'ผ่าน',
+          direction: event.direction || '',
+          time: event.time || '',
+          cameraId: event.cameraId || '',
+          imageUrl: event.imageUrl || '',
+        }],
+      };
+      var id = regRow(row);
+      var dirCls = event.direction === 'entry' ? 'in' :
+        event.direction === 'exit' ? 'out' : '';
+      return '<div class="item tap search-event" data-cap="'+id+'">'+
+        '<div class="it-main">'+
+          '<span class="search-time">'+esc(event.time || '--:--')+'</span>'+
+          '<div class="it-sub search-meta">'+
+            '<span class="search-dir '+dirCls+'">'+esc(event.directionLabel || 'ผ่าน')+'</span>'+
+            '<span class="search-camera">กล้อง '+esc(event.cameraId || '-')+'</span>'+
+          '</div>'+
+        '</div><span class="row-go">›</span></div>';
+    }
+
+    function renderSearch(r){
+      lastSearchReport=r; currentMode='search';
+      CAPS={}; capSeq=0;
+      renderSearchCaption(r);
+      var s=r.summary||{};
+      var profile = s.vehicleVision || {};
+      var profileName = [profile.make, profile.model].filter(Boolean).join(' ');
+      var profileColor = colorTh(profile.color);
+      var metaBits = [];
+      if(s.resident){
+        metaBits.push('อยู่ในทะเบียนบ้าน '+(s.houses||[]).join(', '));
+      } else {
+        metaBits.push('ไม่ใช่ทะเบียนลูกบ้าน');
+      }
+      if(profileName || profileColor){
+        metaBits.push([profileName, profileColor].filter(Boolean).join(' · '));
+      }
+      var summary = '<div class="search-summary">'+
+        '<div class="search-summary-top">'+
+          '<div>'+
+            '<div class="search-summary-plate">'+esc(s.displayPlate || displayPlate(s.plate || ''))+'</div>'+
+            '<div class="search-summary-tag">'+esc(metaBits.join(' · ') || 'ผลค้นหาข้ามวัน')+'</div>'+
+          '</div>'+
+          '<div class="search-summary-tag">ช่วงรวม '+esc(s.firstLabel && s.lastLabel ? (s.firstLabel+' → '+s.lastLabel) : 'ไม่มีข้อมูล')+'</div>'+
+        '</div>'+
+        '<div class="search-summary-stats">'+
+          '<div class="search-stat"><div class="lbl">พบทั้งหมด</div><div class="val">'+esc(s.totalEvents||0)+' ครั้ง</div></div>'+
+          '<div class="search-stat"><div class="lbl">พบต่างวัน</div><div class="val">'+esc(s.totalDays||0)+' วัน</div></div>'+
+          '<div class="search-stat"><div class="lbl">เข้า</div><div class="val">'+esc(s.entryEvents||0)+' ครั้ง</div></div>'+
+          '<div class="search-stat"><div class="lbl">ออก</div><div class="val">'+esc(s.exitEvents||0)+' ครั้ง</div></div>'+
+        '</div>'+
+      '</div>';
+      var groups = (r.dateGroups||[]).map(function(group){
+        var inner = (group.events||[]).map(function(event){
+          return searchEventRow(s, event);
+        }).join('');
+        return acc('search-'+group.reportDate, '', group.dateLabel, group.eventCount+' ครั้ง · '+group.timeRange,
+          inner || '<div class="search-empty">ไม่พบรายการในวันนี้</div>', true);
+      }).join('');
+      elBody.innerHTML = summary + '<div class="search-groups">'+
+        (groups || '<div class="search-empty">ไม่พบข้อมูลทะเบียนนี้ในช่วงที่เก็บไว้</div>')+
+      '</div>';
+      setSearchHint('ค้นหาครบแล้ว: พบ '+(s.totalEvents||0)+' ครั้งใน '+(s.totalDays||0)+' วัน', 'ok');
     }
 
     /* fix2 + fix5: accordion toggle + stat boxes navigate */
@@ -386,9 +663,46 @@
       if(save){ saveComment(save.closest('.unread')); return; }
       var head = e.target.closest('.acc-head');
       if(head){ document.getElementById('sec-'+head.dataset.key).classList.toggle('open'); return; }
+      var item = e.target.closest('.item.tap');
+      if(item){ var id=item.getAttribute('data-cap'); if(id&&CAPS[id]) openPhotos(CAPS[id]); return; }
       var stat = e.target.closest('.stat');
       if(stat){ navTo(stat.dataset.target); }
     });
+
+    /* photo evidence lightbox */
+    var elPbx=document.getElementById('photobox'),
+        elPbxHead=document.getElementById('pbxHead'),
+        elPbxBody=document.getElementById('pbxBody');
+    function closePhotos(){ elPbx.classList.remove('open'); elPbxBody.innerHTML=''; }
+    function openPhotos(r){
+      var caps=(r&&r.captures)||[];
+      var v=(r&&r.vehicleVision)||{}; var brand=[v.make,v.model].filter(Boolean).join(' ');
+      var cth=colorTh(v.color);
+      var sub=[brand,cth].filter(Boolean).join(' · ');
+      var head='<span class="pbx-plate">'+esc(displayPlate(r.plate))+'</span>';
+      if(r.houses&&r.houses.length) head+='<span class="pbx-sub">บ้าน '+r.houses.map(esc).join(', ')+'</span>';
+      if(sub) head+='<span class="pbx-sub">'+esc(sub)+'</span>';
+      elPbxHead.innerHTML=head;
+      if(!caps.length){
+        elPbxBody.innerHTML='<div class="pbx-empty">ไม่มีภาพสำหรับรายการนี้</div>';
+      } else {
+        elPbxBody.innerHTML=caps.map(function(c){
+          var dirCls=c.direction==='entry'?'io-in':c.direction==='exit'?'io-out':'';
+          var meta=(c.time?esc(c.time)+' น.':'')+(c.cameraId?' · กล้อง '+esc(c.cameraId):'');
+          var cap='<div class="pbx-cap"><span class="'+dirCls+'">'+esc(c.label||'')+'</span> '+
+            '<span class="pbx-time">'+meta+'</span></div>';
+          var img=c.imageUrl ?
+            '<a href="'+esc(c.imageUrl)+'" target="_blank" rel="noopener">'+
+              '<img class="pbx-img" src="'+esc(c.imageUrl)+'" alt="ภาพรถจากกล้อง" loading="lazy"></a>'
+            : '<div class="pbx-noimg">⏳ ยังไม่มีภาพ (ระบบกำลังดึงจากกล้อง ~15 นาที)</div>';
+          return '<div class="pbx-item">'+cap+img+'</div>';
+        }).join('');
+      }
+      elPbx.classList.add('open');
+    }
+    document.getElementById('pbxX').addEventListener('click', closePhotos);
+    elPbx.addEventListener('click', function(e){ if(e.target===elPbx) closePhotos(); });
+    document.addEventListener('keydown', function(e){ if(e.key==='Escape'&&elPbx.classList.contains('open')) closePhotos(); });
     async function saveComment(card){
       if(!card) return;
       var s=getSession(); if(!s){ showLogin(); return; }
@@ -411,11 +725,19 @@
       sec.classList.remove('flash'); void sec.offsetWidth; sec.classList.add('flash');
     }
 
-    function setNavState(){ elNext.disabled = (elDate.value >= todayStr()); }
+    function setNavState(searchActive){
+      var active = typeof searchActive === 'boolean' ? searchActive :
+        normalizePlateSearch(elSearch.value).length > 0;
+      elDate.disabled = active;
+      elPrev.disabled = active;
+      elNext.disabled = active || (elDate.value >= todayStr());
+      if(elSearchClear) elSearchClear.disabled = !normalizePlateSearch(elSearch.value);
+    }
 
-    async function load(){
+    async function loadDaily(){
       var s=getSession(); if(!s){ showLogin(); return; }
-      setNavState();
+      searchToken++;
+      setNavState(false);
       elBody.innerHTML='<div class="loading"><span class="spinner"></span>กำลังโหลด…</div>';
       try{
         var res=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',
@@ -424,7 +746,41 @@
           showLogin('สิทธิ์ไม่ถูกต้องหรือหมดอายุ กรุณาเข้าสู่ระบบใหม่'); return; }
         var data=await res.json();
         if(!res.ok||!data.ok) throw new Error(data&&data.error?data.error:('HTTP '+res.status));
-        elLogout.style.display='inline'; render(data.report);
+        renderIdentity(s); renderDaily(data.report);
+      }catch(err){ elBody.innerHTML='<div class="note">โหลดข้อมูลไม่สำเร็จ<br><small>'+esc(err.message)+'</small></div>'; }
+    }
+
+    async function loadSearch(){
+      var s=getSession(); if(!s){ showLogin(); return; }
+      var query=normalizePlateSearch(elSearch.value);
+      if(!query){
+        setSearchHint('พิมพ์เลขทะเบียนเพื่อค้นหาข้ามวัน', 'neutral');
+        await loadDaily();
+        return;
+      }
+      if(query.length < 4){
+        searchToken++;
+        currentMode='search';
+        setNavState(true);
+        elBody.innerHTML='<div class="search-empty">พิมพ์เลขทะเบียนให้ครบอย่างน้อย 4 ตัวอักษรเพื่อเริ่มค้นหา</div>';
+        elCap.innerHTML='ค้นหาเลขทะเบียน<span class="win">กำลังรอให้พิมพ์ครบก่อนค้นหาข้ามวัน</span>';
+        setSearchHint('พิมพ์ทะเบียนให้ครบก่อน ระบบจะค้นหาข้ามวันอัตโนมัติ', 'neutral');
+        return;
+      }
+      var token=++searchToken;
+      currentMode='search';
+      setNavState(true);
+      elBody.innerHTML='<div class="loading"><span class="spinner"></span>กำลังค้นหา…</div>';
+      setSearchHint('กำลังค้นหาเลขทะเบียน '+displayPlate(query)+' ข้ามวัน…', 'neutral');
+      try{
+        var res=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',
+          body:JSON.stringify({action:'searchPlate',houseNo:s.houseNo,pin:s.pin,plate:query})});
+        if(token!==searchToken) return;
+        if(res.status===401||res.status===403){ localStorage.removeItem(SESSION_KEY);
+          showLogin('สิทธิ์ไม่ถูกต้องหรือหมดอายุ กรุณาเข้าสู่ระบบใหม่'); return; }
+        var data=await res.json();
+        if(!res.ok||!data.ok) throw new Error(data&&data.error?data.error:('HTTP '+res.status));
+        renderIdentity(s); renderSearch(data.report);
       }catch(err){ elBody.innerHTML='<div class="note">โหลดข้อมูลไม่สำเร็จ<br><small>'+esc(err.message)+'</small></div>'; }
     }
 
@@ -442,7 +798,9 @@
           elMErr.classList.add('show'); return; }
         var data=await res.json();
         if(!res.ok||!data.ok) throw new Error(data&&data.error?data.error:('HTTP '+res.status));
-        storeSession(h,pin); hideLogin(); elLogout.style.display='inline'; render(data.report);
+        storeSession(h,pin); hideLogin(); renderIdentity({houseNo:h});
+        var q=normalizePlateSearch(elSearch.value);
+        if(q) await loadSearch(); else renderDaily(data.report);
       }catch(err){ elMErr.textContent='เชื่อมต่อไม่ได้: '+err.message; elMErr.classList.add('show'); }
       finally{ elBtn.disabled=false; elBtn.textContent='เข้าสู่ระบบ'; }
     }
@@ -450,19 +808,44 @@
     function shiftDay(delta){
       var d=new Date(elDate.value+'T00:00:00'); d.setDate(d.getDate()+delta);
       var s=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-      if(s>todayStr()) return; elDate.value=s; load();
+      if(s>todayStr()) return; elDate.value=s; loadCurrent();
     }
 
     elDate.value=todayStr(); elDate.max=todayStr();
-    elDate.addEventListener('change', function(){ if(elDate.value>todayStr()) elDate.value=todayStr(); load(); });
+    elDate.addEventListener('change', function(){ if(elDate.value>todayStr()) elDate.value=todayStr(); loadCurrent(); });
     elPrev.addEventListener('click', function(){ shiftDay(-1); });
     elNext.addEventListener('click', function(){ shiftDay(1); });
     elBtn.addEventListener('click', doLogin);
     elPin.addEventListener('keydown', function(e){ if(e.key==='Enter') doLogin(); });
     elSuffix.addEventListener('keydown', function(e){ if(e.key==='Enter') elPin.focus(); });
-    elLogout.addEventListener('click', function(){ localStorage.removeItem(SESSION_KEY); showLogin(); });
+    if(elSearch){
+      elSearch.addEventListener('input', function(){
+        elSearchClear.disabled = !normalizePlateSearch(elSearch.value);
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(function(){ loadCurrent(); }, 350);
+      });
+      elSearch.addEventListener('keydown', function(e){
+        if(e.key==='Enter'){ e.preventDefault(); clearTimeout(searchTimer); loadCurrent(); }
+      });
+    }
+    if(elSearchClear){
+      elSearchClear.addEventListener('click', function(){
+        elSearch.value = '';
+        elSearchClear.disabled = true;
+        clearTimeout(searchTimer);
+        loadDaily();
+        elSearch.focus();
+      });
+    }
 
-    load();
+    async function loadCurrent(){
+      var q=normalizePlateSearch(elSearch.value);
+      setNavState(q.length > 0);
+      if(q) return loadSearch();
+      return loadDaily();
+    }
+
+    loadCurrent();
   })();
   </script>
 </body>
