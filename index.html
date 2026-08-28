@@ -93,6 +93,9 @@
       font-family:inherit;
     }
     .tab.active { background:var(--text); border-color:var(--text); color:#fff; }
+    /* Leaves the committee desk. Pushed to the far edge so it never reads as
+       a third thing to browse alongside the two real tabs. */
+    .tab-switch { margin-left:auto; border-color:var(--border); color:var(--text-muted); }
     .tab .count {
       display:inline-block; min-width:20px; padding:0 5px; margin-left:5px;
       border-radius:99px; background:var(--accent); color:#fff;
@@ -264,6 +267,14 @@
     .media-row { display:flex; flex-wrap:wrap; gap:8px; margin-top:11px; }
     .media-thumb { display:block; width:88px; height:88px; padding:0; cursor:zoom-in; border-radius:10px; overflow:hidden; border:1px solid var(--border); background:#000; }
     .media-row img, .media-row video { width:100%; height:100%; object-fit:cover; display:block; }
+    .media-row.detail-gallery {
+      display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
+      gap:12px; margin-top:18px;
+    }
+    .detail-gallery .media-thumb {
+      width:100%; height:auto; aspect-ratio:4/3; border-radius:14px;
+      box-shadow:0 4px 14px rgba(56,38,18,.09);
+    }
     .edit-box { margin-top:13px; padding:13px; border-radius:13px; background:var(--bg-soft); }
     .edit-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:11px; }
     .edit-actions .btn { flex:1; }
@@ -280,9 +291,21 @@
     .reply-box { display:flex; gap:8px; margin-top:12px; align-items:flex-start; }
     .reply-box textarea { min-height:52px; font-size:14px; }
     .mine-summary { display:flex; gap:7px; margin:17px 0 11px; overflow-x:auto; }
+    .inbox-alert {
+      display:flex; align-items:center; gap:11px; width:100%; margin:17px 0 12px;
+      padding:12px 14px; border:1px solid #efb7aa; border-radius:14px;
+      background:#fff4f1; color:#713426; text-align:left; cursor:pointer;
+      font:600 13.5px/1.45 inherit;
+    }
+    .inbox-alert::before {
+      content:''; width:9px; height:9px; flex:0 0 auto; border-radius:50%;
+      background:#c94b36; box-shadow:0 0 0 5px rgba(201,75,54,.12);
+    }
+    .inbox-alert span { margin-left:auto; color:#9b3b2b; font-size:18px; }
     #mineList { display:flex; flex-direction:column; gap:14px; }
     .detail-mode #paneMine { padding-top:14px; }
-    .mine-detail-toolbar { display:flex; align-items:center; margin-bottom:18px; }
+    .mine-detail-toolbar { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
+    .mine-detail-toolbar .detail-edit { margin-left:auto; }
     .detail-back {
       display:inline-flex; align-items:center; gap:7px; border:0; background:transparent;
       color:var(--accent-deep); padding:5px 0; cursor:pointer; font:500 13px/1.5 inherit;
@@ -294,6 +317,14 @@
     .issue-detail .t-title { font-size:20px; line-height:1.5; }
     .issue-detail .thread-detail { margin-top:18px; padding-top:18px; }
     .issue-detail .detail-text { font-size:15px; line-height:1.8; }
+    .resident-ticket.edit-view {
+      border:1px solid var(--border); border-radius:18px; padding:24px;
+      background:var(--card); box-shadow:0 6px 22px rgba(60,40,20,.07);
+    }
+    .edit-view .edit-box { margin:0; padding:0; background:transparent; }
+    .edit-intro { margin-bottom:22px; }
+    .edit-intro h2 { margin:0 0 5px; font-size:20px; color:var(--text); }
+    .edit-intro p { margin:0; color:var(--text-muted); font-size:13px; line-height:1.6; }
     .form-toolbar { display:flex; align-items:center; margin:15px 0 6px; }
     .report-cta-wrap {
       position:sticky; bottom:12px; z-index:12; display:flex; justify-content:flex-end;
@@ -306,21 +337,171 @@
     .detail-mode .report-cta-wrap { display:none; }
     .summary-chip { flex:0 0 auto; border:1px solid var(--border); border-radius:99px; padding:6px 11px; font-size:11.5px; color:var(--text-soft); }
     .summary-chip.on { border-color:var(--accent); color:var(--accent-deep); background:var(--warn-bg); }
+    button.summary-chip { font-family:inherit; cursor:pointer; background:var(--card); }
 
     /* ── admin ── */
-    .stats { display:flex; gap:7px; overflow-x:auto; padding:2px 0 6px; }
-    .stat {
-      flex:0 0 auto; background:var(--card); border:1px solid var(--border-soft);
-      border-radius:12px; padding:9px 13px; min-width:78px; text-align:center;
-      cursor:pointer;
+    .linkish {
+      border:0; background:transparent; cursor:pointer; font-family:inherit;
+      font-size:13px; font-weight:500; color:var(--text-muted); padding:5px 2px;
     }
-    .stat.on { border-color:var(--accent); background:#fdf7ee; }
-    .stat .n { font-size:19px; font-weight:700; color:var(--text); }
-    .stat .l { font-size:11px; color:var(--text-muted); margin-top:1px; }
-    .admin-bar { display:flex; gap:8px; margin:10px 0 4px; }
-    .admin-bar input { flex:1; }
-    .note-item { background:#f4f0e6; border-radius:10px; padding:9px 12px; font-size:12.5px; line-height:1.6; color:var(--text-soft); }
+    .linkish:hover { color:var(--accent-text); }
+    /* Names the pile without shouting; the count is the part worth reading. */
+    .group-label {
+      display:flex; align-items:center; gap:8px; margin:2px 0 13px;
+      font-size:12.5px; font-weight:500; color:var(--text-muted);
+    }
+    .group-label span {
+      font-family:ui-monospace,'SF Mono',Menlo,monospace; font-size:11.5px;
+      font-weight:600; background:var(--accent); color:#fff;
+      border-radius:99px; padding:1px 8px;
+    }
+    .queue-tabs {
+      display:grid; grid-template-columns:repeat(3,1fr); gap:6px;
+      margin:17px 0 18px; padding:4px; border-radius:14px; background:var(--bg-soft);
+    }
+    .queue-tab {
+      min-width:0; min-height:42px; border:0; border-radius:10px;
+      background:transparent; color:var(--text-muted); cursor:pointer;
+      font:600 12.5px/1.25 inherit; padding:7px 5px;
+    }
+    .queue-tab strong { display:inline-block; margin-left:4px; color:inherit; }
+    .queue-tab.on { background:var(--card); color:var(--text); box-shadow:0 2px 9px rgba(60,40,20,.08); }
+    .queue-tab.on:first-child { color:#9b3b2b; }
+    .queue-state {
+      display:inline-flex; align-items:center; gap:6px; margin-bottom:9px;
+      font-size:11.5px; font-weight:700; color:var(--text-muted);
+    }
+    .queue-state::before { content:''; width:7px; height:7px; border-radius:50%; background:#b8aa94; }
+    .queue-state.needs_action { color:#a13f2d; }
+    .queue-state.needs_action::before { background:#c94b36; box-shadow:0 0 0 4px rgba(201,75,54,.11); }
+    .queue-state.waiting { color:#38647b; }
+    .queue-state.waiting::before { background:#4a819d; }
+    .queue-state.done { color:#4d7c3f; }
+    .queue-state.done::before { background:#5d914d; }
+    .workflow-actions { display:flex; gap:8px; margin-bottom:10px; }
+    .workflow-actions .btn { flex:1; min-height:42px; }
+    .btn.done-action { background:#4d7c3f; }
+    .pager {
+      display:flex; align-items:center; justify-content:center; gap:14px;
+      margin:4px 0 10px;
+    }
+    .pg {
+      width:36px; height:36px; border-radius:50%; cursor:pointer;
+      border:1px solid var(--border); background:var(--card);
+      color:var(--text-soft); font:400 15px/1 inherit;
+    }
+    .pg:hover:not(:disabled) { border-color:var(--accent); color:var(--accent-text); }
+    .pg:disabled { opacity:.35; cursor:default; }
+    .pg-n {
+      font-family:ui-monospace,'SF Mono',Menlo,monospace;
+      font-size:12.5px; color:var(--text-muted); min-width:52px; text-align:center;
+    }
+
+    /* ── ticket card: who sent it, what it says ── */
+    /* Each report is its own object on the page. Separation comes from air and
+       a lifted edge rather than from a coloured stripe — a stripe every card
+       carries distinguishes nothing. */
+    .tk {
+      background:var(--card); border:1px solid var(--border);
+      border-radius:17px; padding:18px 19px 15px; margin-bottom:20px;
+      cursor:pointer; box-shadow:0 3px 12px rgba(60,40,20,.07);
+      transition:box-shadow .15s ease, transform .15s ease;
+    }
+    .tk:hover {
+      box-shadow:0 7px 20px rgba(60,40,20,.11); transform:translateY(-1px);
+    }
+    .tk-who { display:flex; align-items:center; gap:10px; margin-bottom:11px; }
+    .tk-av {
+      width:36px; height:36px; border-radius:50%; flex:0 0 auto;
+      display:grid; place-items:center; font-size:12.5px; font-weight:700;
+      background:#f7e6cd; color:var(--accent-deep); letter-spacing:-.02em;
+    }
+    .tk-av.anon { background:var(--neutral-bg); color:var(--text-muted); font-size:15px; }
+    .tk-who-tx { flex:1; min-width:0; }
+    .tk-name { font-size:14px; font-weight:600; line-height:1.35; color:var(--text); }
+    .tk-sub {
+      font-size:11.5px; color:var(--text-muted); line-height:1.4;
+      display:flex; gap:6px; align-items:center; flex-wrap:wrap;
+    }
+    .tk-sub .code { font-family:ui-monospace,'SF Mono',Menlo,monospace; font-weight:600; color:var(--accent-text); }
+    .tk-st {
+      flex:0 0 auto; border-radius:99px; padding:3px 11px;
+      font-size:11px; font-weight:600; white-space:nowrap;
+      background:var(--neutral-bg); color:var(--neutral);
+    }
+    .tk-st.st-new { background:var(--warn-bg); color:var(--accent-deep); }
+    .tk-st.st-in_progress { background:var(--info-bg); color:var(--info); }
+    .tk-st.st-resolved { background:var(--ok-bg); color:var(--ok); }
+    .tk-title {
+      font-size:16px; font-weight:600; line-height:1.4;
+      letter-spacing:-.01em; color:var(--text); margin-bottom:5px;
+    }
+    .tk-body {
+      font-size:13.5px; color:var(--text-soft); line-height:1.65;
+      white-space:pre-wrap;
+      display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden;
+    }
+    .tk-foot {
+      display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+      margin-top:12px; padding-top:11px; border-top:1px solid #f2ebdb;
+    }
+    /* Category, demoted from a filter row to a quiet label. */
+    .tk-tag { font-size:11.5px; color:var(--text-muted); background:#f7f2e6; border-radius:7px; padding:3px 9px; }
+    .tk-att { font-size:11.5px; color:var(--text-muted); }
     .admin-actions { display:flex; flex-wrap:wrap; gap:7px; margin-top:12px; }
+
+    /* ── thread sheet ──
+       Reading a resident and writing back is the whole job of this desk, so it
+       takes the screen instead of unfolding inside a list row. */
+    .overlay.sheet-overlay { z-index:50; padding:0; }
+    .sheet {
+      background:var(--card); width:min(680px,100%); height:100%;
+      display:flex; flex-direction:column; border-radius:0;
+      /* The head and foot paint their own backgrounds; without this they run
+         straight over the rounded corners and the sheet reads as a hard box. */
+      overflow:hidden;
+      box-shadow:0 24px 60px rgba(40,26,10,.3);
+    }
+    .sheet-head {
+      flex:0 0 auto; display:flex; align-items:flex-start; gap:10px;
+      padding:16px 18px 13px; border-bottom:1px solid var(--border);
+      background:var(--card);
+    }
+    .sheet-head-tx { flex:1; min-width:0; }
+    .sheet-head .tk-who { margin-bottom:9px; }
+    .sheet-head .tk-title { font-size:18px; margin:0; }
+    .sheet-close {
+      flex:0 0 auto; width:34px; height:34px; border-radius:50%; cursor:pointer;
+      border:1px solid var(--border); background:var(--bg-soft);
+      color:var(--text-soft); font-size:14px; font-family:inherit;
+    }
+    .sheet-close:hover { border-color:var(--accent); color:var(--accent-text); }
+    .sheet-body { flex:1; min-height:0; overflow-y:auto; padding:16px 18px 22px; }
+    .sheet-body .thread-detail { border-top:0; margin-top:0; padding-top:0; }
+    .sheet-tags { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+    /* Sided bubbles, admin-side only. The resident's own view inverts "us" and
+       "them", so this alignment stays scoped to the committee sheet. */
+    #issueSheetBody .reply { max-width:86%; }
+    #issueSheetBody .reply.admin { margin-left:auto; }
+    #issueSheetBody .reply.resident { background:var(--card); border:1px solid var(--border); }
+    .sheet-foot {
+      flex:0 0 auto; padding:12px 18px 15px;
+      border-top:1px solid var(--border); background:var(--bg-soft);
+    }
+    .sheet-foot .reply-box { margin-top:0; }
+    .sheet-foot textarea { background:var(--card); }
+    /* Phone gets the whole screen; on a desktop the list stays visible around
+       the edges so the sheet reads as one thread out of many. */
+    @media (min-width:660px) {
+      .overlay.sheet-overlay { padding:28px; }
+      .sheet { border-radius:20px; height:auto; max-height:100%; }
+    }
+    @media (max-width:540px) {
+      .media-row.detail-gallery { grid-template-columns:1fr; }
+      .resident-ticket.edit-view { padding:18px 15px; }
+      .mine-detail-toolbar { align-items:flex-start; }
+      .mine-detail-toolbar .detail-edit { white-space:nowrap; }
+    }
 
     /* ── login ── */
     .overlay {
@@ -385,6 +566,21 @@
       .t-top { gap:6px; }
       .report-cta-wrap { bottom:10px; }
       .report-cta { width:100%; }
+      .app-surface { margin-left:-1px; margin-right:-1px; }
+      .hero { padding:19px 15px 0; }
+      #residentView, #adminView { padding:0 15px 20px; }
+      .mine-summary { margin-top:13px; }
+      .resident-ticket { padding:13px 14px; }
+      .ticket-header { gap:8px; }
+      .ticket-header .t-top { justify-content:flex-start; margin-top:8px; }
+      .ticket-header { display:block; }
+      .tk { padding:15px 14px 13px; margin-bottom:12px; }
+      .sheet-head { padding:13px 14px 11px; }
+      .sheet-body { padding:14px 14px 18px; }
+      .sheet-foot { padding:10px 14px calc(12px + env(safe-area-inset-bottom)); }
+      .sheet-foot .reply-box { align-items:stretch; }
+      .sheet-foot textarea { min-height:44px; max-height:110px; }
+      .sheet-foot .btn { min-width:58px; min-height:44px; }
     }
   </style>
 </head>
@@ -395,7 +591,6 @@
       <div class="brand-sub">Report an Issue</div>
     </a>
     <div class="header-actions">
-      <button id="adminToggle" class="btn ghost small" type="button" hidden>หลังบ้าน</button>
       <div id="headerIdentity"></div>
     </div>
   </header>
@@ -474,6 +669,7 @@
 
       <!-- my tickets -->
       <section id="paneMine">
+        <button class="inbox-alert" id="residentInboxAlert" type="button" hidden></button>
         <div class="mine-summary" id="mineSummary"></div>
         <div id="mineList"></div>
         <div class="report-cta-wrap">
@@ -484,17 +680,15 @@
 
     <!-- ═══ ADMIN ═══ -->
     <main id="adminView" hidden>
-      <div class="tabs">
+      <!-- A single tab is not a tab, so the live/archive pair is hidden rather
+           than shown as a one-item choice; leaving the desk is an exit link,
+           not a sibling destination. Unhide these to bring the archive back. -->
+      <div class="tabs" hidden>
         <button class="tab active" id="tabLive" type="button">เรื่องปัจจุบัน</button>
         <button class="tab" id="tabArchive" type="button">คลังเรื่องเก่า</button>
       </div>
       <div id="paneLive">
-      <div class="stats" id="adminStats"></div>
-      <div class="admin-bar">
-        <input type="text" id="adminSearch" placeholder="ค้นหาหัวข้อหรือรายละเอียด" />
-        <button class="btn ghost small" id="adminRefresh" type="button">รีเฟรช</button>
-      </div>
-      <div class="chips" id="adminCatChips" style="margin:10px 0 4px"></div>
+      <div class="queue-tabs" id="adminQueueTabs"></div>
       <div id="adminList"></div>
       </div>
       <section id="paneArchive" hidden>
@@ -512,6 +706,19 @@
       เรื่องที่แจ้งเห็นเฉพาะผู้แจ้งและกรรมการ · ไฟล์แนบเก็บไว้ 365 วัน<br>
       Pattra Villa 8
     </footer>
+  </div>
+
+  <div class="overlay sheet-overlay" id="issueOverlay" aria-hidden="true">
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="รายละเอียดเรื่อง">
+      <div class="sheet-head">
+        <div class="sheet-head-tx" id="issueSheetHead"></div>
+        <button class="sheet-close" id="issueSheetClose" type="button" aria-label="ปิด">✕</button>
+      </div>
+      <div class="sheet-body" id="issueSheetBody"></div>
+      <!-- Writing back is what this sheet is for, so the composer is pinned
+           rather than parked at the end of however long the thread got. -->
+      <div class="sheet-foot" id="issueSheetFoot"></div>
+    </div>
   </div>
 
   <div class="overlay media-overlay" id="mediaOverlay" aria-hidden="true">
@@ -565,8 +772,8 @@
     ['suggestion', 'ข้อเสนอแนะ'], ['feedback', 'ข้อกังวล'],
     ['other', 'อื่น ๆ']
   ];
-  var STATUSES = [['new', 'เรื่องใหม่'], ['in_progress', 'กำลังดำเนินการ'],
-    ['resolved', 'ดำเนินการแล้ว'], ['closed', 'ปิดเรื่อง']];
+  // The stored statuses still exist server-side, but this desk no longer asks
+  // the committee to curate or interpret them in the conversation list.
   var MAX_IMAGES = 5, MAX_VIDEOS = 1;
   var MAX_VIDEO_BYTES = 20 * 1024 * 1024;
 
@@ -672,7 +879,7 @@
     $('bootState').hidden = true;
     if (!session) showGuestForm();
     $('loginOverlay').classList.add('open');
-    $('adminToggle').hidden = true;
+    canAdmin = false;
     if (message) { $('loginErr').textContent = message; $('loginErr').classList.add('show'); }
     setTimeout(function () { $('loginSuffix').focus(); }, 80);
   }
@@ -874,6 +1081,7 @@
   var openIssueId = '';
   var editIssueId = '';
   var editFiles = [];
+  var mineFilter = 'all';
 
   function loadMine() {
     return api('myIssues', {}).then(function (data) {
@@ -883,9 +1091,10 @@
       $('mineList').innerHTML = '<div class="msg err">' + esc(e.message) + '</div>';
     });
   }
-  function mediaHtml(attachments) {
+  function mediaHtml(attachments, gallery) {
     if (!attachments || !attachments.length) return '';
-    return '<div class="media-row">' + attachments.map(function (a) {
+    return '<div class="media-row' + (gallery ? ' detail-gallery' : '') + '">' +
+      attachments.map(function (a) {
       var inner = a.kind === 'video' ?
         '<video src="' + esc(a.url) + '" muted playsinline></video>' :
         '<img src="' + esc(a.url) + '" alt="" loading="lazy" />';
@@ -997,8 +1206,10 @@
     }).join('') + '</div>';
   }
   function renderMine() {
-    var newCount = myIssues.filter(function (i) { return i.status === 'new'; }).length;
-    var progressCount = myIssues.filter(function (i) { return i.status === 'in_progress'; }).length;
+    var unreadIssues = myIssues.filter(function (i) { return i.hasUnreadReply; });
+    var activeCount = myIssues.filter(function (i) {
+      return i.status !== 'resolved' && i.status !== 'closed';
+    }).length;
     var doneCount = myIssues.filter(function (i) {
       return i.status === 'resolved' || i.status === 'closed';
     }).length;
@@ -1008,23 +1219,46 @@
     if (openIssueId && !selectedIssue) openIssueId = '';
     $('residentView').classList.toggle('detail-mode', !!selectedIssue);
     $('mineSummary').hidden = !!selectedIssue;
+    $('residentInboxAlert').hidden = !!selectedIssue || !unreadIssues.length;
+    $('residentInboxAlert').innerHTML = unreadIssues.length ?
+      'มีคำตอบใหม่ ' + unreadIssues.length + ' เรื่อง <span>›</span>' : '';
     if (!$('paneMine').hidden) {
       $('heroKicker').textContent = selectedIssue ? 'MY REPORT' : 'RESIDENT SUPPORT';
-      $('heroTitle').textContent = selectedIssue ? 'รายละเอียดเรื่อง' : 'เรื่องของฉัน';
+      $('heroTitle').textContent = editIssueId ? 'แก้ไขเรื่อง' :
+        (selectedIssue ? 'รายละเอียดเรื่อง' : 'เรื่องของฉัน');
     }
     $('mineSummary').innerHTML =
-      '<span class="summary-chip on">ทั้งหมด ' + myIssues.length + '</span>' +
-      '<span class="summary-chip">รับเรื่องแล้ว ' + newCount + '</span>' +
-      '<span class="summary-chip">กำลังดูแล ' + progressCount + '</span>' +
-      (doneCount ? '<span class="summary-chip">เรียบร้อย ' + doneCount + '</span>' : '');
+      '<button class="summary-chip' + (mineFilter === 'all' ? ' on' : '') +
+        '" type="button" data-mine-filter="all">ทั้งหมด ' + myIssues.length + '</button>' +
+      '<button class="summary-chip' + (mineFilter === 'active' ? ' on' : '') +
+        '" type="button" data-mine-filter="active">กำลังดูแล ' + activeCount + '</button>' +
+      '<button class="summary-chip' + (mineFilter === 'done' ? ' on' : '') +
+        '" type="button" data-mine-filter="done">เสร็จแล้ว ' + doneCount + '</button>';
     if (!myIssues.length) {
       $('mineList').innerHTML = '<div class="empty">ยังไม่มีเรื่องที่คุณแจ้งไว้<br>' +
         'เริ่มแจ้งเรื่องได้ที่แท็บ “แจ้งปัญหา”</div>';
       return;
     }
-    var issuesToRender = selectedIssue ? [selectedIssue] : myIssues;
+    var issuesToRender = selectedIssue ? [selectedIssue] : myIssues.filter(function (issue) {
+      var done = issue.status === 'resolved' || issue.status === 'closed';
+      return mineFilter === 'all' || (mineFilter === 'done' ? done : !done);
+    });
+    issuesToRender.sort(function (a, b) {
+      if (a.hasUnreadReply !== b.hasUnreadReply) return a.hasUnreadReply ? -1 : 1;
+      return Date.parse(b.updatedAt || b.createdAt || 0) - Date.parse(a.updatedAt || a.createdAt || 0);
+    });
+    if (!selectedIssue && !issuesToRender.length) {
+      $('mineList').innerHTML = '<div class="empty">ยังไม่มีเรื่องในหมวดนี้</div>';
+      return;
+    }
     $('mineList').innerHTML = (selectedIssue ?
-      '<div class="mine-detail-toolbar"><button class="detail-back" type="button" data-detail-back>กลับไปเรื่องของฉัน</button></div>' : '') +
+      '<div class="mine-detail-toolbar">' +
+        '<button class="detail-back" type="button" data-detail-back>กลับไปเรื่องของฉัน</button>' +
+        (editIssueId ?
+          '<button class="linkish detail-edit" type="button" data-cancel-edit>ยกเลิก</button>' :
+          '<button class="btn ghost small detail-edit" type="button" data-edit="' +
+            esc(selectedIssue.id) + '">แก้ไขเรื่อง</button>') +
+      '</div>' : '') +
       issuesToRender.map(function (issue) {
       var open = issue.id === openIssueId;
       var pills = '<div class="t-top">' +
@@ -1045,16 +1279,25 @@
         '</div></div>' + pills + '</div>';
 
       if (!open) {
+        var lastAdminReply = (issue.replies || []).filter(function (reply) {
+          return reply.author !== 'resident';
+        }).pop();
+        var preview = issue.hasUnreadReply && lastAdminReply ?
+          'กรรมการตอบ: “' + lastAdminReply.message + '”' : issue.detail;
         return '<div class="ticket resident-ticket st-' + esc(issue.status) + '" data-open="' + esc(issue.id) + '">' +
-          head + '<div class="t-preview">' + esc(issue.detail) + '</div></div>';
+          head + '<div class="t-preview">' + esc(preview) + '</div></div>';
+      }
+      if (editIssueId === issue.id) {
+        return '<article class="ticket resident-ticket edit-view">' +
+          '<div class="edit-intro"><h2>แก้ไขข้อมูลที่แจ้ง</h2>' +
+          '<p>ปรับเฉพาะข้อมูลที่ต้องการ แล้วกดบันทึกเมื่อเรียบร้อย</p></div>' +
+          editIssueHtml(issue) + '</article>';
       }
       return '<article class="ticket resident-ticket issue-detail st-' + esc(issue.status) + '">' +
         head +
         '<div class="thread-detail">' +
           '<div class="detail-text">' + esc(issue.detail) + '</div>' +
-          mediaHtml(issue.attachments) +
-          (editIssueId === issue.id ? editIssueHtml(issue) :
-            '<div data-stop="1" style="margin-top:12px"><button class="btn ghost small" type="button" data-edit="' + esc(issue.id) + '">แก้ไขเรื่องนี้</button></div>') +
+          mediaHtml(issue.attachments, true) +
           repliesHtml(issue.replies) +
           '<div class="reply-box" data-stop="1">' +
             '<textarea id="replyInput" placeholder="พิมพ์ข้อความเพิ่มเติมถึงนิติฯ"></textarea>' +
@@ -1066,93 +1309,198 @@
 
   /* ── admin ───────────────────────────────────────────────────────── */
   var adminIssues = [];
-  var adminFilter = { status: '', category: '', search: '' };
   var adminOpenId = '';
+  var adminQueue = 'needs_action';
+  var pageAdmin = 1;
+  var PAGE_SIZE = 20;
+  function pageSlice(list, page) {
+    return list.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  }
+
+  function pagerHtml(total, page, key) {
+    var pages = Math.ceil(total / PAGE_SIZE);
+    if (pages < 2) return '';
+    return '<div class="pager">' +
+      '<button class="pg" type="button" data-pg="' + key + ':' + (page - 1) + '"' +
+        (page <= 1 ? ' disabled' : '') + '>←</button>' +
+      '<span class="pg-n">' + page + ' / ' + pages + '</span>' +
+      '<button class="pg" type="button" data-pg="' + key + ':' + (page + 1) + '"' +
+        (page >= pages ? ' disabled' : '') + '>→</button>' +
+    '</div>';
+  }
 
   function loadAdmin() {
     $('adminList').innerHTML = '<div class="loading"><span class="spinner"></span>กำลังโหลด…</div>';
-    return api('adminList', {
-      status: adminFilter.status,
-      category: adminFilter.category,
-      search: adminFilter.search
-    }).then(function (data) {
+    return api('adminList', {}).then(function (data) {
       adminIssues = data.issues || [];
-      renderAdminStats(data.stats || {});
-      renderAdminCats();
       renderAdminList();
+      // A reply or a status change reloads the board underneath; the open sheet
+      // has to pick up the same new state instead of showing the old thread.
+      if (issueSheetOpen()) renderIssueSheet();
     }).catch(function (e) {
       $('adminList').innerHTML = '<div class="msg err">' + esc(e.message) + '</div>';
     });
   }
-  function renderAdminStats(stats) {
-    var cells = [['', 'ทั้งหมด', stats.total || 0]].concat(STATUSES.map(function (s) {
-      return [s[0], s[1], stats[s[0]] || 0];
-    }));
-    $('adminStats').innerHTML = cells.map(function (c) {
-      return '<div class="stat' + (adminFilter.status === c[0] ? ' on' : '') +
-        '" data-status="' + c[0] + '"><div class="n">' + c[2] + '</div>' +
-        '<div class="l">' + esc(c[1]) + '</div></div>';
-    }).join('');
+
+  // Minutes and hours are how a triage list is actually read; the exact
+  // timestamp belongs in the thread, where someone is reading properly.
+  function fmtAgo(value) {
+    var ms = typeof value === 'number' ? value :
+      (value && value._seconds ? value._seconds * 1000 : Date.parse(value));
+    if (!ms || isNaN(ms)) return '';
+    var mins = Math.round((Date.now() - ms) / 60000);
+    if (mins < 1) return 'เมื่อครู่';
+    if (mins < 60) return mins + ' นาทีที่แล้ว';
+    if (mins < 1440) return Math.round(mins / 60) + ' ชม.ที่แล้ว';
+    var days = Math.round(mins / 1440);
+    if (days < 8) return days + ' วันที่แล้ว';
+    return fmtDate(value);
   }
-  function renderAdminCats() {
-    $('adminCatChips').innerHTML = [['', 'ทุกหมวด']].concat(CATEGORIES).map(function (c) {
-      return '<button type="button" class="chip' +
-        (adminFilter.category === c[0] ? ' on' : '') + '" data-acat="' + c[0] + '">' +
-        esc(c[1]) + '</button>';
-    }).join('');
+
+  // Who sent it, first thing on the card. An anonymous report has to be
+  // unmistakable at a glance — it is the one thing the committee must not
+  // misread, and redactIssueForAdmin has already stripped the house number.
+  function adminCardHead(issue, absolute) {
+    var anon = issue.anonymous;
+    var suffix = String(issue.houseNo || '').split('/').pop();
+    return '<div class="tk-who">' +
+      '<div class="tk-av' + (anon ? ' anon' : '') + '">' +
+        (anon ? '🙈' : esc(suffix)) + '</div>' +
+      '<div class="tk-who-tx">' +
+        '<div class="tk-name">' +
+          (anon ? 'ไม่ประสงค์ออกนาม' : 'บ้าน ' + esc(issue.houseNo)) + '</div>' +
+        '<div class="tk-sub"><span class="code">' + esc(issue.code) + '</span>' +
+          '<span>· ' + esc(absolute ? fmtDate(issue.createdAt) : fmtAgo(issue.createdAt)) +
+          '</span></div>' +
+      '</div>' +
+    '</div>';
   }
+
+  function adminCardFoot(issue) {
+    var images = issue.attachments.length;
+    return '<div class="tk-foot">' +
+      '<span class="tk-tag">' + esc(issue.categoryLabel) + '</span>' +
+      (images ? '<span class="tk-att">📎 ' + images + '</span>' : '') +
+      (issue.replies.length ?
+        '<span class="tk-att">💬 ' + issue.replies.length + '</span>' : '') +
+    '</div>';
+  }
+
+  function adminQueueState(issue) {
+    if (issue.queueState) return issue.queueState;
+    if (issue.status === 'resolved' || issue.status === 'closed') return 'done';
+    if (issue.status === 'new' || !issue.replies.length) return 'needs_action';
+    return issue.lastReplyBy === 'resident' ? 'needs_action' : 'waiting';
+  }
+
+  function adminQueueLabel(issue) {
+    var state = adminQueueState(issue);
+    if (state === 'done') return 'เสร็จแล้ว';
+    if (state === 'waiting') return 'รอติดตาม';
+    return issue.lastReplyBy === 'resident' ? 'ลูกบ้านตอบเพิ่ม' : 'เรื่องใหม่';
+  }
+
+  function adminCard(issue) {
+    return '<div class="tk st-' + esc(issue.status) +
+      '" data-aopen="' + esc(issue.id) + '">' +
+      '<div class="queue-state ' + esc(adminQueueState(issue)) + '">' +
+        esc(adminQueueLabel(issue)) + '</div>' +
+      adminCardHead(issue) +
+      '<div class="tk-title">' + esc(issue.title) + '</div>' +
+      '<div class="tk-body">' + esc(issue.detail) + '</div>' +
+      adminCardFoot(issue) +
+      '</div>';
+  }
+
   function renderAdminList() {
-    if (!adminIssues.length) {
-      $('adminList').innerHTML = '<div class="empty"><span class="big">✅</span>ไม่มีเรื่องตามเงื่อนไขนี้</div>';
-      return;
+    var counts = {needs_action: 0, waiting: 0, done: 0};
+    adminIssues.forEach(function (issue) { counts[adminQueueState(issue)] += 1; });
+    $('adminQueueTabs').innerHTML =
+      '<button class="queue-tab' + (adminQueue === 'needs_action' ? ' on' : '') +
+        '" type="button" data-queue="needs_action">ต้องทำ <strong>' + counts.needs_action + '</strong></button>' +
+      '<button class="queue-tab' + (adminQueue === 'waiting' ? ' on' : '') +
+        '" type="button" data-queue="waiting">รอติดตาม <strong>' + counts.waiting + '</strong></button>' +
+      '<button class="queue-tab' + (adminQueue === 'done' ? ' on' : '') +
+        '" type="button" data-queue="done">เสร็จแล้ว <strong>' + counts.done + '</strong></button>';
+    var visibleIssues = adminIssues.filter(function (issue) {
+      return adminQueueState(issue) === adminQueue;
+    }).sort(function (a, b) {
+      return Date.parse(b.updatedAt || b.createdAt || 0) - Date.parse(a.updatedAt || a.createdAt || 0);
+    });
+    pageAdmin = Math.min(pageAdmin,
+      Math.max(1, Math.ceil(visibleIssues.length / PAGE_SIZE)));
+    $('adminList').innerHTML = visibleIssues.length ?
+      '<div class="group-label">' +
+        (adminQueue === 'needs_action' ? 'เรื่องที่ต้องดำเนินการ' :
+          (adminQueue === 'waiting' ? 'เรื่องที่ตอบแล้วและกำลังติดตาม' : 'เรื่องที่เสร็จแล้ว')) +
+        ' <span>' + visibleIssues.length + '</span></div>' +
+      pageSlice(visibleIssues, pageAdmin).map(adminCard).join('') +
+      pagerHtml(visibleIssues.length, pageAdmin, 'all') :
+      '<div class="empty"><span class="big">✓</span>ไม่มีเรื่องในคิวนี้</div>';
+  }
+
+  // The thread lives in a sheet over the list: full width for the resident's
+  // words, and the list keeps its place underneath instead of reflowing.
+  function renderIssueSheet() {
+    var issue = null;
+    for (var i = 0; i < adminIssues.length; i++) {
+      if (adminIssues[i].id === adminOpenId) { issue = adminIssues[i]; break; }
     }
-    $('adminList').innerHTML = adminIssues.map(function (issue) {
-      var open = issue.id === adminOpenId;
-      var head = '<div class="t-top">' +
-        '<span class="pill st-' + esc(issue.status) + '">' + esc(issue.statusLabel) + '</span>' +
-        (issue.priority !== 'normal' ?
-          '<span class="pill pri-' + esc(issue.priority) + '">' + esc(issue.priorityLabel) + '</span>' : '') +
-        '<span class="pill' + (issue.anonymous ? ' anon' : '') + '">' + esc(issue.reporterLabel) + '</span>' +
-        '</div>' +
-        '<div class="t-title">' + esc(issue.title) + '</div>' +
-        '<div class="t-meta">' + esc(issue.categoryLabel) + ' · ' + esc(fmtDate(issue.createdAt)) +
-        (issue.replies.length ? ' · ตอบแล้ว ' + issue.replies.length + ' ข้อความ' : '') + '</div>';
+    if (!issue) { closeIssueSheet(); return; }
 
-      if (!open) {
-        return '<div class="ticket st-' + esc(issue.status) + '" data-aopen="' + esc(issue.id) + '">' +
-          head + '<div class="t-preview">' + esc(issue.detail) + '</div></div>';
-      }
+    $('issueSheetHead').innerHTML = adminCardHead(issue, true) +
+      '<div class="tk-title">' + esc(issue.title) + '</div>';
 
-      var notes = issue.internalNotes.length ?
-        '<div class="replies">' + issue.internalNotes.map(function (n) {
-          return '<div class="note-item">📝 ' + esc(n.message) +
-            '<br><small>' + esc(n.authorHouseNo || '') + ' · ' + esc(fmtDate(n.createdAt)) + '</small></div>';
-        }).join('') + '</div>' : '';
-
-      var statusButtons = STATUSES.map(function (s) {
-        return '<button type="button" class="chip' + (issue.status === s[0] ? ' on' : '') +
-          '" data-setstatus="' + s[0] + '" data-id="' + esc(issue.id) + '">' + esc(s[1]) + '</button>';
-      }).join('');
-
-      return '<div class="ticket st-' + esc(issue.status) + '" data-aopen="' + esc(issue.id) + '">' +
-        head +
+    var images = issue.attachments.length;
+    $('issueSheetBody').innerHTML =
+      '<div class="sheet-tags">' +
+        '<span class="tk-tag">' + esc(issue.categoryLabel) + '</span>' +
+        (images ? '<span class="tk-att">📎 ' + images + '</span>' : '') +
+      '</div>' +
         '<div class="thread-detail">' +
           '<div class="detail-text">' + esc(issue.detail) + '</div>' +
           (issue.contact ? '<div class="t-meta">ติดต่อกลับ: ' + esc(issue.contact) + '</div>' : '') +
-          mediaHtml(issue.attachments) +
+          mediaHtml(issue.attachments, true) +
           repliesHtml(issue.replies) +
-          notes +
-          '<div class="reply-box" data-stop="1">' +
-            '<textarea id="adminReplyInput" placeholder="ตอบกลับถึงผู้แจ้ง (ผู้แจ้งจะเห็นข้อความนี้)"></textarea>' +
-            '<button class="btn small" type="button" data-areply="' + esc(issue.id) + '">ตอบ</button>' +
-          '</div>' +
-          '<div class="reply-box" data-stop="1">' +
-            '<textarea id="adminNoteInput" placeholder="บันทึกภายใน (ผู้แจ้งไม่เห็น)"></textarea>' +
-            '<button class="btn ghost small" type="button" data-anote="' + esc(issue.id) + '">บันทึก</button>' +
-          '</div>' +
-          '<div class="admin-actions" data-stop="1">' + statusButtons + '</div>' +
-        '</div></div>';
-    }).join('');
+        '</div>';
+
+    // Internal notes are gone on purpose: two textareas that differed only by
+    // placeholder were one mis-click away from publishing a private note to the
+    // resident. Stored notes stay in Firestore; adminNote still exists on the
+    // server. The four-state workflow is gone too — nobody had time to keep it
+    // truthful, and a stale status is worse than none.
+    $('issueSheetFoot').innerHTML =
+      '<div class="workflow-actions" data-stop="1">' +
+        '<button class="btn ghost small" type="button" data-astatus="in_progress" data-issue="' +
+          esc(issue.id) + '">รอติดตาม</button>' +
+        '<button class="btn small done-action" type="button" data-astatus="resolved" data-issue="' +
+          esc(issue.id) + '">เสร็จแล้ว</button>' +
+      '</div>' +
+      '<div class="reply-box" data-stop="1">' +
+        '<textarea id="adminReplyInput" placeholder="พิมพ์ตอบผู้แจ้ง…"></textarea>' +
+        '<button class="btn small" type="button" data-areply="' + esc(issue.id) + '">ตอบ</button>' +
+      '</div>';
+  }
+
+  function openIssueSheet(id) {
+    adminOpenId = id;
+    renderIssueSheet();
+    if (!adminOpenId) return;
+    $('issueOverlay').classList.add('open');
+    $('issueOverlay').setAttribute('aria-hidden', 'false');
+    document.body.style.overflow = 'hidden';
+    $('issueSheetBody').scrollTop = 0;
+  }
+
+  function closeIssueSheet() {
+    adminOpenId = '';
+    $('issueOverlay').classList.remove('open');
+    $('issueOverlay').setAttribute('aria-hidden', 'true');
+    document.body.style.overflow = '';
+  }
+
+  function issueSheetOpen() {
+    return $('issueOverlay').classList.contains('open');
   }
 
   // The retired board used its own three-state kanban vocabulary.
@@ -1191,10 +1539,15 @@
     var admin = next === 'admin';
     $('adminView').hidden = !admin;
     $('residentView').hidden = admin;
-    $('adminToggle').textContent = admin ? 'มุมมองลูกบ้าน' : 'หลังบ้าน';
+    // Arriving straight on the committee desk from the landing page leaves the
+    // resident panes untouched, so switching back needs a defined destination.
+    if (!admin && $('paneMine').hidden && $('paneForm').hidden) {
+      if (session) showMine(''); else showReportForm(false);
+      return;
+    }
     $('heroKicker').textContent = admin ? 'COMMITTEE DESK' :
       (openIssueId ? 'MY REPORT' : 'RESIDENT SUPPORT');
-    $('heroTitle').textContent = admin ? 'เรื่องจากลูกบ้าน' :
+    $('heroTitle').textContent = admin ? 'กล่องรับเรื่อง' :
       ($('paneMine').hidden ? 'แจ้งปัญหา / เสนอแนะ' :
         (openIssueId ? 'รายละเอียดเรื่อง' : 'เรื่องของฉัน'));
     if (admin) loadAdmin();
@@ -1318,6 +1671,19 @@
       if (issue) addEditFiles(e.target.files, issue);
       e.target.value = '';
     });
+    $('mineSummary').addEventListener('click', function (e) {
+      var filter = e.target.closest('[data-mine-filter]');
+      if (!filter) return;
+      mineFilter = filter.getAttribute('data-mine-filter');
+      renderMine();
+    });
+    $('residentInboxAlert').addEventListener('click', function () {
+      var issue = myIssues.filter(function (item) { return item.hasUnreadReply; })[0];
+      if (!issue) return;
+      openIssueId = issue.id;
+      renderMine();
+      api('markSeen', {issueId: issue.id}).then(loadMine).catch(function () {});
+    });
 
     document.addEventListener('click', function (e) {
       var media = e.target.closest('[data-media-url]');
@@ -1331,7 +1697,11 @@
       if (e.target === $('mediaOverlay')) closeMedia();
     });
     document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') closeMedia();
+      if (e.key !== 'Escape') return;
+      // Innermost layer first: an image opened from a thread closes back to the
+      // thread, not all the way out to the list.
+      if ($('mediaOverlay').classList.contains('open')) { closeMedia(); return; }
+      if (issueSheetOpen()) closeIssueSheet();
     });
 
     $('tabLive').addEventListener('click', function () {
@@ -1344,28 +1714,25 @@
       if (!archiveLoaded) loadArchive();
     });
 
-    $('adminToggle').addEventListener('click', function () {
-      setMode(mode === 'admin' ? 'resident' : 'admin');
+    $('issueSheetClose').addEventListener('click', closeIssueSheet);
+    $('issueOverlay').addEventListener('click', function (e) {
+      if (e.target === $('issueOverlay')) closeIssueSheet();
     });
-    $('adminRefresh').addEventListener('click', loadAdmin);
-    $('adminSearch').addEventListener('keydown', function (e) {
-      if (e.key !== 'Enter') return;
-      adminFilter.search = String(e.target.value || '').trim();
-      loadAdmin();
-    });
-    $('adminStats').addEventListener('click', function (e) {
-      var cell = e.target.closest('[data-status]');
-      if (!cell) return;
-      adminFilter.status = cell.getAttribute('data-status');
-      loadAdmin();
-    });
-    $('adminCatChips').addEventListener('click', function (e) {
-      var chip = e.target.closest('[data-acat]');
-      if (!chip) return;
-      adminFilter.category = chip.getAttribute('data-acat');
-      loadAdmin();
-    });
-    $('adminList').addEventListener('click', function (e) {
+
+    // Reply, note and status controls live in the sheet now; the list keeps the
+    // same handler so nothing breaks if a control ever moves back onto a card.
+    function adminActionClick(e) {
+      var pg = e.target.closest('[data-pg]');
+      if (pg) {
+        var move = pg.getAttribute('data-pg').split(':');
+        pageAdmin = Number(move[1]);
+        renderAdminList();
+        // Back to the top of the list, not wherever the last page's tenth card
+        // happened to leave the viewport.
+        var box = $('adminList').getBoundingClientRect();
+        window.scrollTo({ top: window.scrollY + box.top - 24, behavior: 'smooth' });
+        return;
+      }
       var reply = e.target.closest('[data-areply]');
       if (reply) {
         var input = $('adminReplyInput');
@@ -1377,31 +1744,34 @@
           .then(function () { reply.disabled = false; });
         return;
       }
-      var note = e.target.closest('[data-anote]');
-      if (note) {
-        var noteInput = $('adminNoteInput');
-        var noteText = String(noteInput && noteInput.value || '').trim();
-        if (!noteText) return;
-        note.disabled = true;
-        api('adminNote', { issueId: note.getAttribute('data-anote'), message: noteText })
-          .then(loadAdmin).catch(function (err) { alert(err.message); })
-          .then(function () { note.disabled = false; });
-        return;
-      }
-      var status = e.target.closest('[data-setstatus]');
+      var status = e.target.closest('[data-astatus]');
       if (status) {
+        status.disabled = true;
         api('adminUpdate', {
-          issueId: status.getAttribute('data-id'),
-          status: status.getAttribute('data-setstatus')
-        }).then(loadAdmin).catch(function (err) { alert(err.message); });
+          issueId: status.getAttribute('data-issue'),
+          status: status.getAttribute('data-astatus')
+        }).then(function () {
+          closeIssueSheet();
+          return loadAdmin();
+        }).catch(function (err) {
+          alert(err.message);
+          status.disabled = false;
+        });
         return;
       }
       if (e.target.closest('[data-media-url]')) return;
       if (e.target.closest('[data-stop]')) return;
       var card = e.target.closest('[data-aopen]');
-      if (!card) return;
-      var id = card.getAttribute('data-aopen');
-      adminOpenId = adminOpenId === id ? '' : id;
+      if (card) openIssueSheet(card.getAttribute('data-aopen'));
+    }
+    $('adminList').addEventListener('click', adminActionClick);
+    $('issueSheetBody').addEventListener('click', adminActionClick);
+    $('issueSheetFoot').addEventListener('click', adminActionClick);
+    $('adminQueueTabs').addEventListener('click', function (e) {
+      var tab = e.target.closest('[data-queue]');
+      if (!tab) return;
+      adminQueue = tab.getAttribute('data-queue');
+      pageAdmin = 1;
       renderAdminList();
     });
   }
@@ -1413,10 +1783,19 @@
     }).then(function (data) {
       var access = data.access || data;
       var permissions = (access && access.permissions) || {};
-      canAdmin = access && access.active !== false &&
-        permissions['admin.portal'] === true && permissions['admin.issues'] === true;
-      $('adminToggle').hidden = !canAdmin;
-    }).catch(function () { $('adminToggle').hidden = true; });
+      // admin.issues alone, matching what estateIssues actually enforces.
+      // The page used to demand admin.portal on top of it, which locked out
+      // every committee member who was not the chair.
+      canAdmin = Boolean(access) && access.active !== false &&
+        permissions['admin.issues'] === true;
+    }).catch(function () { canAdmin = false; });
+  }
+
+  // The landing page links committee members straight to the desk.
+  function wantsAdminView() {
+    try {
+      return new URLSearchParams(location.search).get('view') === 'admin';
+    } catch (e) { return false; }
   }
 
   function showGuestForm() {
@@ -1424,7 +1803,6 @@
     $('bootState').hidden = true;
     $('residentView').hidden = false;
     $('adminView').hidden = true;
-    $('adminToggle').hidden = true;
     renderChoiceChips();
     renderWho();
     renderPreviews();
@@ -1439,8 +1817,14 @@
     $('residentView').hidden = false;
     renderChoiceChips();
     renderWho();
-    loadMine();
-    resolveAdminAccess();
+    var toAdmin = wantsAdminView();
+    if (!toAdmin) loadMine();
+    resolveAdminAccess().then(function () {
+      if (!toAdmin) return;
+      // No permission — fall through to the ordinary resident view rather than
+      // showing an error; the backend would reject every call anyway.
+      if (canAdmin) setMode('admin'); else loadMine();
+    });
   }
 
   bindEvents();
