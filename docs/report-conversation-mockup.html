@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Pattra Report — Conversation Mockups</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root{--ink:#302920;--muted:#756b5f;--line:#e7dfd2;--paper:#fff;--cream:#f6f0e4;--amber:#c96d18;--amber-soft:#fff3e2;--green:#326b35;--shadow:0 24px 70px rgba(52,43,31,.13)}
+    *{box-sizing:border-box} body{margin:0;background:#e9e5dc;color:var(--ink);font-family:"IBM Plex Sans Thai",sans-serif} button,textarea{font:inherit}
+    .page{min-height:100vh;padding:28px}.top{max-width:1160px;margin:0 auto 18px;display:flex;align-items:end;justify-content:space-between;gap:20px}.eyebrow{font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--amber)}h1{margin:3px 0 0;font-size:25px}.tabs{display:flex;gap:7px;background:rgba(255,255,255,.64);padding:5px;border-radius:14px}.tab{border:0;background:transparent;padding:9px 15px;border-radius:10px;color:var(--muted);cursor:pointer;font-weight:600}.tab.active{background:var(--ink);color:white}.stage{max-width:1160px;margin:auto;background:var(--paper);border-radius:24px;box-shadow:var(--shadow);overflow:hidden;border:1px solid rgba(255,255,255,.9)}
+    .casebar{height:72px;padding:0 28px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line)}.case-title{font-size:20px;font-weight:700}.ticket{color:var(--amber);margin-left:8px}.actions{display:flex;gap:9px}.status,.close{border:1px solid var(--line);background:#fbf8f2;border-radius:11px;padding:9px 13px;font-weight:600}.close{color:var(--green);background:white;border-color:#a8c0a9}
+    .panel{display:none}.panel.active{display:block}.thread{padding:24px 30px 12px;min-height:300px}.msg{display:grid;grid-template-columns:42px 1fr;gap:12px;margin-bottom:18px}.avatar{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:#f0ede7;color:#6d665e;font-size:15px;font-weight:700}.msg.committee .avatar{background:var(--amber);color:#fff}.meta{display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px}.meta strong{font-size:15px}.meta time{color:var(--muted)}.bubble{border:1px solid var(--line);border-radius:14px;padding:15px 17px;line-height:1.6}.committee .bubble{border-color:#f0c997;background:var(--amber-soft)}
+    .compose{border-top:1px solid var(--line);padding:22px 30px 26px;background:#fcfaf6}.compose-label{font-size:18px;font-weight:700;margin-bottom:10px}.editor{border:1px solid #cfc6b8;border-radius:16px;background:#fff;overflow:hidden;transition:.2s}.editor:focus-within{border-color:var(--amber);box-shadow:0 0 0 3px rgba(201,109,24,.1)}textarea{display:block;width:100%;height:132px;padding:17px;border:0;outline:0;resize:vertical;color:var(--ink);background:transparent}.toolbar{min-height:58px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:9px 11px 9px 15px;gap:12px}.tools{display:flex;gap:8px;align-items:center}.tool{border:0;background:transparent;color:var(--muted);padding:8px 9px;border-radius:8px;cursor:pointer}.tool:hover{background:var(--cream);color:var(--ink)}.send{border:0;background:var(--amber);color:#fff;border-radius:11px;padding:11px 20px;font-weight:700;cursor:pointer}.send:hover{filter:brightness(.94)}.hint{font-size:12px;color:var(--muted);margin-top:8px;text-align:right}
+    .reply-card{border:1px solid var(--line);border-radius:18px;background:#fff;box-shadow:0 10px 26px rgba(52,43,31,.08);padding:20px}.reply-head{display:flex;align-items:center;gap:10px;margin-bottom:13px}.reply-head strong{font-size:19px}.chip{background:#efede8;border-radius:99px;padding:5px 10px;font-size:12px}.card-editor{border:1px solid var(--line);border-radius:12px;background:#fffaf2}.reply-actions{display:flex;justify-content:space-between;align-items:center;margin-top:13px}.draft{border:1px solid var(--line);background:white;border-radius:10px;padding:10px 14px;color:var(--muted)}
+    .dock{background:var(--cream);padding-top:19px}.dock .privacy{font-size:12px;color:var(--muted)}.preset{border:1px solid var(--line);background:#fff;border-radius:9px;padding:8px 11px;color:var(--muted)}
+    .note{max-width:1160px;margin:14px auto 0;color:#5e574f;font-size:13px;text-align:center}
+    @media(max-width:760px){.page{padding:12px}.top{align-items:stretch;flex-direction:column}.tabs{overflow:auto}.stage{border-radius:18px}.casebar{height:auto;padding:16px;align-items:flex-start;gap:12px}.case-title{font-size:16px}.actions{flex-direction:column}.thread,.compose{padding-left:16px;padding-right:16px}.meta{display:block}.meta time{display:block;margin-top:2px}.toolbar,.reply-actions{align-items:stretch;flex-direction:column}.tools{flex-wrap:wrap}.send{width:100%}}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="top"><div><div class="eyebrow">Pattra Report · UI Study</div><h1>พื้นที่โต้ตอบลูกบ้าน–กรรมการ</h1></div><nav class="tabs" aria-label="เลือกแบบ"><button class="tab active" data-panel="a">A · Conversation</button><button class="tab" data-panel="b">B · Reply Card</button><button class="tab" data-panel="c">C · Command Dock</button></nav></header>
+    <section class="stage">
+      <div class="casebar"><div class="case-title">การสนทนา <span class="ticket">· PT-2569-0002</span></div><div class="actions"><button class="status">◷ กำลังดำเนินการ⌄</button><button class="close">✓ ปิดเรื่อง</button></div></div>
+      <div class="thread">
+        <article class="msg committee"><div class="avatar">กก</div><div><div class="meta"><strong>กรรมการ</strong><time>28 ส.ค. 2569 12:46</time></div><div class="bubble">test</div></div></article>
+        <article class="msg"><div class="avatar">ผจ</div><div><div class="meta"><strong>ผู้แจ้ง</strong><time>28 ส.ค. 2569 12:46</time></div><div class="bubble">ขอบคุณครับ</div></div></article>
+      </div>
+      <section class="panel active" id="a"><div class="compose"><div class="editor"><textarea placeholder="พิมพ์ตอบผู้แจ้ง…"></textarea><div class="toolbar"><div class="tools"><button class="tool">⌕ แนบไฟล์</button></div><button class="send">ส่งข้อความ →</button></div></div><div class="hint">Enter เพื่อส่ง · Shift + Enter ขึ้นบรรทัดใหม่</div></div></section>
+      <section class="panel" id="b"><div class="compose"><div class="reply-card"><div class="reply-head"><strong>ตอบกลับผู้แจ้ง</strong><span class="chip">● ผู้แจ้ง</span></div><div class="editor card-editor"><textarea placeholder="เขียนข้อความตอบกลับ…"></textarea></div><div class="reply-actions"><div class="tools"><button class="tool">▧ แนบรูป</button><button class="tool">⌕ แนบไฟล์</button></div><div class="tools"><button class="draft">บันทึกร่าง</button><button class="send">ส่งคำตอบ →</button></div></div></div></div></section>
+      <section class="panel" id="c"><div class="compose dock"><div class="compose-label">ข้อความถึงผู้แจ้ง</div><div class="tools" style="margin-bottom:10px"><button class="tool">⌕ แนบไฟล์</button><button class="tool">▧ แนบรูป</button><button class="preset">▤ เลือกข้อความสำเร็จรูป⌄</button></div><div class="editor"><textarea placeholder="พิมพ์ข้อความ…"></textarea></div><div class="toolbar" style="border:0;padding:12px 0 0"><div class="privacy">🔒 ผู้แจ้งและกรรมการเท่านั้นที่เห็นข้อความนี้</div><button class="send">ส่งให้ผู้แจ้ง →</button></div></div></section>
+    </section>
+    <p class="note">Mockup เท่านั้น — ปุ่มและช่องพิมพ์ใช้ทดลอง interaction ได้ แต่ไม่ส่งข้อมูลจริง</p>
+  </main>
+  <script>
+    document.querySelectorAll('.tab').forEach(function(tab){tab.addEventListener('click',function(){document.querySelectorAll('.tab,.panel').forEach(function(el){el.classList.remove('active')});tab.classList.add('active');document.getElementById(tab.dataset.panel).classList.add('active')})});
+    document.querySelectorAll('textarea').forEach(function(area){area.addEventListener('keydown',function(event){if(event.key==='Enter'&&!event.shiftKey){event.preventDefault()}})});
+  </script>
+</body>
+</html>

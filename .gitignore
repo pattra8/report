@@ -71,3 +71,6 @@ node_modules/
 firebase-debug.log
 functions/node_modules/
 functions/.env
+
+# Local data exports (resident/issue content — never commit)
+backups/
