@@ -2,7 +2,6 @@ const crypto = require("crypto");
 
 const admin = require("firebase-admin");
 const {GoogleAuth} = require("google-auth-library");
-const sharp = require("sharp");
 const {setGlobalOptions} = require("firebase-functions/v2");
 const {
   onDocumentCreated,
@@ -12,6 +11,149 @@ const {onRequest} = require("firebase-functions/v2/https");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
 const logger = require("firebase-functions/logger");
 const {defineSecret} = require("firebase-functions/params");
+const {
+  prepareJsonRequest,
+  sendLegacyError,
+  setCorsHeaders,
+} = require("./platform/http");
+const {
+  ISSUE_COMMENT_MAX,
+  ISSUE_INTERNAL_NOTE_MAX,
+  assertAttachmentSlotAvailable,
+  buildIssueSubmission,
+  buildIssueWatchNotice,
+  formatIssueCode,
+  issueBuddhistYear,
+  issueError,
+  issueQueueState,
+  isResidentIssueEditable,
+  isIssueRateLimited,
+  normalizeIssuePriority,
+  normalizeIssueStatus,
+  normalizeIssueText,
+  parseIssueUpload,
+  redactIssueForAdmin,
+  summarizeIssueStatuses,
+  toResidentIssueView,
+} = require("./domains/issues/contracts");
+const {
+  findPaymentResident,
+  paymentHouseNumber: ppHouseNum,
+} = require("./domains/payments/resident-repository");
+const {
+  commitPaymentVerification,
+  commitGroupVerification,
+} = require("./domains/payments/receipt-repository");
+const {
+  commonSlipAmount,
+  normalizeOptionalReceiptEmail,
+} = require("./domains/payments/public-slip-policy");
+const {
+  normalizeCommonPeriod,
+} = require("./domains/payments/period-policy");
+const {
+  applyPaymentToPlan,
+  isPlanActive,
+  planProgress,
+  validatePlanInput,
+} = require("./domains/payments/installment-policy");
+const {
+  buildHouseBilling,
+  redactInstallmentBalances,
+} = require("./domains/payments/house-billing");
+const {
+  MAX_PARKING_PERIODS,
+  parseParkingPeriod,
+  parkingPeriodsFrom,
+  inferParkingMonths,
+  splitSlipAmount,
+  nextParkingStart,
+} = require("./domains/payments/parking-period");
+const {
+  ADMIN_ACCESS_DEFAULTS,
+  ADMIN_PERMISSION_KEYS,
+  normalizeAdminPermissions,
+} = require("./domains/auth/admin-access-policy");
+const {
+  getCarQuota,
+  parseCarQuota,
+} = require("./domains/residents/car-quota");
+const {
+  maskDocumentNumber,
+  normalizeDocumentNumber,
+  normalizeVisitorName,
+  normalizeVisitorPlate,
+  normalizeVisitorVehicleType,
+  stripThaiProvinceForLookup,
+  THAI_PROVINCES,
+} = require("./domains/visitors/normalization");
+const {
+  getVisitorIntakeStatus,
+  shouldAttemptVisitorOutageNotice,
+  shouldStartNewVisitorImageLog,
+  shouldStartNewVisitorLog,
+} = require("./domains/visitors/intake-state");
+const {
+  analyzeVisitorImageWithRetry,
+  canRetryVisitorImage,
+  mergeVisitorEvidence,
+  nextVisitorOcrRetryAt,
+  visitorImageAnalysisPatch,
+  visitorTimestampMs,
+} = require("./domains/visitors/image-analysis");
+const {
+  accumulatePeerEvents,
+  anprEventStatus,
+  heartbeatStatus,
+  lineMessagingStatus,
+  overallStatus,
+  probeStatus,
+} = require("./domains/health/status-policy");
+const {
+  ADMIN_ACCESS_COLLECTION,
+  ADMIN_DOCUMENTS_COLLECTION,
+  AUDIT_LOG_COLLECTION,
+  BULKY_WASTE_COLLECTION,
+  DAILY_TRAFFIC_CONFIG_PATH,
+  GUARD_AUDIT_CONFIG_PATH,
+  LIFESTYLE_SURVEY_COLLECTION,
+  LINE_BROADCASTS_COLLECTION,
+  LINE_CONFIG_PATH,
+  LINE_FLEX_ROUTING_CONFIG_PATH,
+  LINE_WEBHOOK_EVENTS_COLLECTION,
+  LINE_TARGETS_COLLECTION,
+  LPR_AGENT_C_ALERTS_COLLECTION,
+  LPR_AGENT_C_AUDITS_COLLECTION,
+  LPR_AGENT_C_CONFIG_PATH,
+  LPR_AGENT_C_METRICS_COLLECTION,
+  LPR_AGENT_C_REPORTS_COLLECTION,
+  LPR_AGENT_C_STATUS_COLLECTION,
+  LPR_DAILY_TRAFFIC_COLLECTION,
+  LPR_MONITOR_CONFIG_PATH,
+  LPR_OVERNIGHT_COLLECTION,
+  LPR_RECONCILIATION_COLLECTION,
+  LPR_TRAFFIC_EVENTS_COLLECTION,
+  LPR_UNREADABLE_LABELS_COLLECTION,
+  LPR_VEHICLE_PROFILES_COLLECTION,
+  ESTATE_ISSUES_COLLECTION,
+  ESTATE_ISSUE_COUNTERS_COLLECTION,
+  FEATURE_USAGE_COLLECTION,
+  ISSUES_ARCHIVE_COLLECTION,
+  PATTRA_INSTALLMENT_PLANS_COLLECTION,
+  PATTRA_PAYMENTS_COLLECTION,
+  POLLS_COLLECTION,
+  RESIDENTS_COLLECTION,
+  RESIDENT_PIN_COLLECTION,
+  RESIDENT_SIGNATURE_COLLECTION,
+  SECURITY_SHIFT_CONFIG_PATH,
+  SYSTEM_HEALTH_CONFIG_PATH,
+  SYSTEM_HEALTH_REBOOTS_COLLECTION,
+  VISITOR_DAILY_CONFIG_PATH,
+  VISITOR_DAILY_REPORTS_COLLECTION,
+  VISITOR_INTAKE_COLLECTION,
+  VISITOR_INTAKE_CONFIG_PATH,
+  VISITOR_INTAKE_SESSIONS_COLLECTION,
+} = require("./platform/firestore-paths");
 
 admin.initializeApp();
 
@@ -30,14 +172,79 @@ const LPR_NVR_PASSWORD = defineSecret("LPR_NVR_PASSWORD");
 const GH_TOKEN_SECRET = defineSecret("GH_TOKEN");
 const RESEND_API_KEY = defineSecret("RESEND_API_KEY");
 
-const LINE_CONFIG_PATH = "system_config/line";
-const LPR_MONITOR_CONFIG_PATH = "system_config/lpr_monitor";
-const DAILY_TRAFFIC_CONFIG_PATH = "system_config/daily_traffic";
-const SECURITY_SHIFT_CONFIG_PATH = "system_config/security_shift";
-const GUARD_AUDIT_CONFIG_PATH = "system_config/guard_audit";
-const LPR_AGENT_C_CONFIG_PATH = "system_config/lpr_agent_c";
-const VISITOR_INTAKE_CONFIG_PATH = "system_config/visitor_intake";
-const VISITOR_DAILY_CONFIG_PATH = "system_config/visitor_daily";
+const REPORT_ISSUE_TEST_TARGET_ID = "Cc8b4fea6ca64611a006388a9c46d8bbe";
+const LINE_FLEX_SANDBOX_TARGET_ID = "Cc8b4fea6ca64611a006388a9c46d8bbe";
+const LINE_FLEX_SECURITY_PRODUCTION_TARGET_ID =
+  "Cece0bf710254a9d48d5b738c4f2afdd7";
+const LINE_FLEX_PATTRA_PAY_PRODUCTION_TARGET_ID =
+  "C7e85f0564a1563a1aa681cd970c04a9d";
+const LINE_FLEX_TARGETS = Object.freeze({
+  sandbox: {
+    key: "sandbox",
+    label: "Pattra Watch",
+    targetId: LINE_FLEX_SANDBOX_TARGET_ID,
+  },
+  securityPrd: {
+    key: "security_prd",
+    label: "Security Pattra 8",
+    targetId: LINE_FLEX_SECURITY_PRODUCTION_TARGET_ID,
+  },
+  pattraVillaPrd: {
+    key: "pattra_villa_prd",
+    label: "Pattra Villa 8",
+    targetId: LINE_FLEX_PATTRA_PAY_PRODUCTION_TARGET_ID,
+  },
+});
+const LINE_FLEX_ROUTE_DEFAULTS = Object.freeze({
+  daily: "prd",
+  night: "prd",
+  guardDay: "prd",
+  guardNight: "prd",
+  pattraPay: "sandbox",
+  pattraReport: "sandbox",
+});
+/**
+ * Returns the default LINE flex config for each flow.
+ * @return {Object<string, {
+ *   sandboxTargetId: string,
+ *   productionTargetId: string,
+ *   activeMode: string,
+ * }>}
+ */
+function getDefaultLineFlexFlows() {
+  return {
+    daily: {
+      sandboxTargetId: LINE_FLEX_TARGETS.sandbox.targetId,
+      productionTargetId: LINE_FLEX_TARGETS.securityPrd.targetId,
+      activeMode: "prd",
+    },
+    night: {
+      sandboxTargetId: LINE_FLEX_TARGETS.sandbox.targetId,
+      productionTargetId: LINE_FLEX_TARGETS.securityPrd.targetId,
+      activeMode: "prd",
+    },
+    guardDay: {
+      sandboxTargetId: LINE_FLEX_TARGETS.sandbox.targetId,
+      productionTargetId: LINE_FLEX_TARGETS.securityPrd.targetId,
+      activeMode: "prd",
+    },
+    guardNight: {
+      sandboxTargetId: LINE_FLEX_TARGETS.sandbox.targetId,
+      productionTargetId: LINE_FLEX_TARGETS.securityPrd.targetId,
+      activeMode: "prd",
+    },
+    pattraPay: {
+      sandboxTargetId: LINE_FLEX_TARGETS.sandbox.targetId,
+      productionTargetId: LINE_FLEX_TARGETS.pattraVillaPrd.targetId,
+      activeMode: "sandbox",
+    },
+    pattraReport: {
+      sandboxTargetId: LINE_FLEX_TARGETS.sandbox.targetId,
+      productionTargetId: LINE_FLEX_TARGETS.securityPrd.targetId,
+      activeMode: "sandbox",
+    },
+  };
+}
 // 2026-06-24 ไม้กั้นปิดปรับปรุง — ระงับ LINE push ของ Daily/Night ชั่วคราว.
 // scheduler ยังสร้าง/บันทึกรายงานตามปกติ (lineSent=false) เพื่อความต่อเนื่อง
 // ของข้อมูล แต่ไม่ส่งเข้า LINE production. เปิดกลับ: ตั้งค่าเป็น false แล้ว
@@ -49,7 +256,6 @@ const RESIDENT_SHEET_RANGE = "Residents!A:G";
 const ANNOUNCEMENT_CHANNEL = "line_pr";
 const MAX_ANNOUNCEMENT_IMAGES = 5;
 const MAX_ANNOUNCEMENT_IMAGE_BYTES = 8 * 1024 * 1024;
-const LINE_TARGETS_COLLECTION = "line_targets";
 const RESIDENT_HEADERS = [
   "house_no",
   "name",
@@ -61,33 +267,14 @@ const RESIDENT_HEADERS = [
 ];
 const GITHUB_OWNER = "pattra8";
 const GITHUB_REPO = "pattra8.github.io";
-const RESIDENT_PIN_COLLECTION = "resident_pins";
-const RESIDENTS_COLLECTION = "residents";
-const AUDIT_LOG_COLLECTION = "audit_log";
-const POLLS_COLLECTION = "polls";
-const LIFESTYLE_SURVEY_COLLECTION = "lifestyle_surveys";
-const RESIDENT_SIGNATURE_COLLECTION = "resident_signatures";
-const ADMIN_DOCUMENTS_COLLECTION = "admin_documents";
-const ADMIN_ACCESS_COLLECTION = "admin_access";
-const LPR_RECONCILIATION_COLLECTION = "lpr_reconciliation_runs";
-const LPR_TRAFFIC_EVENTS_COLLECTION = "lpr_traffic_events";
-const LPR_DAILY_TRAFFIC_COLLECTION = "lpr_daily_traffic_reports";
-// Human review/labels for "สแกนไม่พบ" captures, used as OCR training feedback.
-const LPR_UNREADABLE_LABELS_COLLECTION = "lpr_unreadable_labels";
-const LPR_OVERNIGHT_COLLECTION = "lpr_overnight_reports";
-const LPR_VEHICLE_PROFILES_COLLECTION = "lpr_vehicle_profiles";
-const LPR_AGENT_C_STATUS_COLLECTION = "lpr_agent_c_camera_status";
-const LPR_AGENT_C_AUDITS_COLLECTION = "lpr_agent_c_event_audits";
-const LPR_AGENT_C_METRICS_COLLECTION = "lpr_agent_c_daily_metrics";
-const LPR_AGENT_C_REPORTS_COLLECTION = "lpr_agent_c_report_audits";
-const LPR_AGENT_C_ALERTS_COLLECTION = "lpr_agent_c_alerts";
 const LPR_AGENT_C_TEST_TARGET_ID = "Cc8b4fea6ca64611a006388a9c46d8bbe";
-const VISITOR_INTAKE_COLLECTION = "visitor_intake_logs";
-const VISITOR_INTAKE_SESSIONS_COLLECTION = "visitor_intake_sessions";
-const VISITOR_DAILY_REPORTS_COLLECTION = "visitor_daily_reports";
 const VISITOR_INTAKE_SESSION_WINDOW_MS = 3 * 60 * 1000;
 const VISITOR_INTAKE_IMAGE_RETENTION_DAYS = 90;
 const VISITOR_INTAKE_METADATA_RETENTION_DAYS = 365;
+const LINE_WEBHOOK_EVENT_RETENTION_DAYS = 7;
+// LPR capture images are the bulk of Storage usage. Purge them after 90 days
+// while keeping the lightweight event metadata, which reports still read.
+const LPR_IMAGE_RETENTION_DAYS = 90;
 const VERTEX_VISION_MODEL = "gemini-3-flash-preview";
 const VERTEX_VISION_LOCATION = "global";
 const LPR_VISION_MIN_CONFIDENCE = 0.72;
@@ -105,41 +292,7 @@ const LPR_USER = "admin";
 const LPR_RETRY_BATCH_LIMIT = 25;
 const MAX_ADMIN_DOCUMENT_BYTES = 15 * 1024 * 1024;
 const ADMIN_DOCUMENT_TYPES = new Set(["insurance", "blueprints"]);
-const ADMIN_PERMISSION_KEYS = [
-  "admin.portal",
-  "admin.residents",
-  "admin.pins",
-  "admin.vote",
-  "admin.survey",
-  "admin.announcements",
-  "admin.pickup",
-  "admin.audit",
-  "expense.view",
-  "expense.manage",
-  "insurance.view",
-  "insurance.manage",
-  "blueprints.view",
-  "blueprints.manage",
-];
-const ADMIN_ACCESS_DEFAULTS = {
-  "38/8": {
-    roleLabel: "ประธานกรรมการ",
-    permissions: Object.fromEntries(
-        ADMIN_PERMISSION_KEYS.map((key) => [key, true]),
-    ),
-  },
-  "38/38": {
-    roleLabel: "กรรมการ",
-    permissions: {
-      "expense.view": true,
-      "insurance.view": true,
-      "blueprints.view": true,
-    },
-  },
-};
-
 // ── Bulky Waste ──────────────────────────────────────────────────────────────
-const BULKY_WASTE_COLLECTION = "bulky_waste_requests";
 const MAX_BULKY_WASTE_PHOTOS = 40; // total cap across all items
 const MAX_BULKY_WASTE_PHOTOS_PER_ITEM = 8;
 const MAX_BULKY_WASTE_PHOTO_BYTES = 8 * 1024 * 1024;
@@ -147,52 +300,6 @@ const MAX_BULKY_WASTE_PHOTO_BYTES = 8 * 1024 * 1024;
 // Legacy values still accepted for display of older docs.
 const BULKY_WASTE_STATUSES = new Set(["submitted", "completed"]);
 const MAX_BULKY_WASTE_ITEMS = 30;
-
-// ── Car quota ────────────────────────────────────────────────────────────────
-const CAR_QUOTA_DEFAULT = 3;
-const CAR_QUOTA_BY_HOUSE = new Map([
-  ["38/19", 4],
-  ["38/41", 5],
-]);
-
-/**
- * Parses a resident quota value into a positive integer.
- * @param {*} value
- * @return {number|null}
- */
-function parseCarQuota(value) {
-  if (value === null || value === undefined || value === "") {
-    return null;
-  }
-  const quota = Number(value);
-  if (!Number.isInteger(quota) || quota <= 0) {
-    return null;
-  }
-  return quota;
-}
-
-/**
- * Applies permissive CORS headers for static GitHub Pages admin requests.
- * @param {*} req
- * @param {*} res
- * @return {void}
- */
-function setCorsHeaders(req, res) {
-  const allowedOrigins = new Set([
-    "https://pattra8.com",
-    "https://www.pattra8.com",
-    "https://pattra8.github.io",
-  ]);
-  const origin = req.get("Origin");
-  res.set(
-      "Access-Control-Allow-Origin",
-      allowedOrigins.has(origin) ? origin : "https://pattra8.com",
-  );
-  res.set("Vary", "Origin");
-  res.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.set("Access-Control-Allow-Headers", "Content-Type");
-  res.set("Cache-Control", "no-store");
-}
 
 /**
  * Gets an access token for the function service account.
@@ -374,9 +481,14 @@ function parseAnnouncementImage(media) {
  * Uploads announcement images to Firebase Storage and returns public URLs.
  * @param {string} announcementId
  * @param {Object[]} media
+ * @param {string} storageFolder
  * @return {Promise<Object[]>}
  */
-async function uploadAnnouncementImages(announcementId, media) {
+async function uploadAnnouncementImages(
+    announcementId,
+    media,
+    storageFolder = "announcements",
+) {
   const bucket = admin.storage().bucket();
   const images = Array.isArray(media) ?
     media.slice(0, MAX_ANNOUNCEMENT_IMAGES) :
@@ -386,7 +498,7 @@ async function uploadAnnouncementImages(announcementId, media) {
   for (let index = 0; index < images.length; index++) {
     const parsed = parseAnnouncementImage(images[index]);
     const token = crypto.randomUUID();
-    const objectPath = `announcements/${announcementId}/` +
+    const objectPath = `${storageFolder}/${announcementId}/` +
       `${Date.now()}-${index}.${parsed.extension}`;
     const file = bucket.file(objectPath);
 
@@ -489,17 +601,6 @@ async function verifyCommitteeResidentAccess(body) {
     role: access.roleLabel,
     canWrite: Boolean(access.permissions[`${vaultType}.manage`]),
   };
-}
-
-/**
- * Returns a complete, normalized permission map.
- * @param {Object} permissions
- * @return {Object}
- */
-function normalizeAdminPermissions(permissions = {}) {
-  return Object.fromEntries(
-      ADMIN_PERMISSION_KEYS.map((key) => [key, permissions[key] === true]),
-  );
 }
 
 /**
@@ -623,32 +724,66 @@ function normalizePlateArray(value) {
 }
 
 /**
+ * Key used for a per-vehicle update timestamp.
+ * @param {string} type Vehicle type: car or moto.
+ * @param {string} plate License plate.
+ * @return {string} Stable, normalized vehicle key.
+ */
+function vehicleUpdatedAtKey(type, plate) {
+  const normalized = normalizePlateArray([plate])[0] || "";
+  return normalized ? `${type}:${normalized}` : "";
+}
+
+/**
+ * Preserves legacy house-level timestamps while migrating to per-vehicle ones.
+ * @param {object} resident Resident document data.
+ * @return {object} Per-vehicle ISO timestamps.
+ */
+function residentVehicleUpdatedAt(resident) {
+  const timestamps = {...(resident.vehicle_updated_at || {})};
+  const legacyTimestamp = String(resident.last_updated || "");
+  if (!legacyTimestamp) return timestamps;
+  normalizePlateArray(resident.cars).forEach((plate) => {
+    const key = vehicleUpdatedAtKey("car", plate);
+    if (key && !timestamps[key]) timestamps[key] = legacyTimestamp;
+  });
+  normalizePlateArray(resident.motorcycles).forEach((plate) => {
+    const key = vehicleUpdatedAtKey("moto", plate);
+    if (key && !timestamps[key]) timestamps[key] = legacyTimestamp;
+  });
+  return timestamps;
+}
+
+/**
+ * Compares audit values using the same semantics as resident data.
+ * Vehicle plates are unordered sets, so changing only their order is not a
+ * resident-data change and should not pollute the activity log.
+ * @param {string} key Resident field name.
+ * @param {*} before Stored value before the update.
+ * @param {*} after Normalized value submitted in the patch.
+ * @return {boolean} Whether both values represent the same data.
+ */
+function residentAuditValuesEqual(key, before, after) {
+  if (key === "cars" || key === "motorcycles") {
+    const oldPlates = normalizePlateArray(before).sort();
+    const newPlates = normalizePlateArray(after).sort();
+    return JSON.stringify(oldPlates) === JSON.stringify(newPlates);
+  }
+  if (Array.isArray(before) || Array.isArray(after)) {
+    return JSON.stringify(before || []) === JSON.stringify(after || []);
+  }
+  const beforeText = before === undefined || before === null ? "" : before;
+  const afterText = after === undefined || after === null ? "" : after;
+  return String(beforeText) === String(afterText);
+}
+
+/**
  * Normalizes a house number for resident auth lookup.
  * @param {string} houseNo
  * @return {string}
  */
 function normalizeHouseNo(houseNo) {
   return String(houseNo || "").trim().replace(/\s+/g, "");
-}
-
-/**
- * Returns the maximum number of cars allowed for a house.
- * @param {string} houseNo
- * @param {Object=} residentData
- * @return {number}
- */
-function getCarQuota(houseNo, residentData = {}) {
-  const residentQuota = parseCarQuota(
-      residentData.car_quota || residentData.carQuota,
-  );
-  if (residentQuota) {
-    return residentQuota;
-  }
-  const quota = CAR_QUOTA_BY_HOUSE.get(normalizeHouseNo(houseNo));
-  if (quota) {
-    return quota;
-  }
-  return CAR_QUOTA_DEFAULT;
 }
 
 /**
@@ -1165,7 +1300,10 @@ async function syncLprCarDiff({houseNo, oldCars, newCars, allCars}) {
   for (const camera of LPR_CAMERAS) {
     const cameraResult = {camera, added: [], removed: [], errors: []};
 
-    for (const plate of toAdd) {
+    // Always reconcile the resident's full current car list. This heals cases
+    // where a plate already existed in Firestore but went missing from a
+    // camera allowlist, which a pure diff-only sync would never re-add.
+    for (const plate of normalizedNewCars) {
       const r = await runWithRetry(
           () => lprAddPlate(camera, plate), plate, "add",
       );
@@ -1225,6 +1363,47 @@ async function buildAllCarsForSync(houseNo, overrideCars = []) {
 }
 
 /**
+ * Syncs one resident's car list into both LPR cameras and stores the result
+ * back on the resident document.
+ * @param {FirebaseFirestore.DocumentReference} residentDocRef
+ * @param {string} houseNo
+ * @param {string[]} oldCars
+ * @param {string[]} newCars
+ * @return {Promise<Object>}
+ */
+async function syncResidentCarsToLpr(
+    residentDocRef, houseNo, oldCars, newCars) {
+  const normalizedHouseNo = normalizeHouseNo(houseNo);
+  const normalizedOldCars = normalizePlateArray(oldCars);
+  const normalizedNewCars = normalizePlateArray(newCars);
+  const allCars = await buildAllCarsForSync(
+      normalizedHouseNo, normalizedNewCars);
+  const result = await syncLprCarDiff({
+    houseNo: normalizedHouseNo,
+    oldCars: normalizedOldCars,
+    newCars: normalizedNewCars,
+    allCars,
+  });
+
+  const patch = {
+    lpr_sync_pending: !result.ok,
+    lpr_last_sync: new Date().toISOString(),
+  };
+  if (result.ok) {
+    patch.lpr_last_error = "";
+  } else {
+    const errorSummary = result.results
+        .flatMap((cameraResult) => (cameraResult.errors || []).map((err) =>
+          `${cameraResult.camera} ${err.action} ${err.plate}: ${err.error}`,
+        ))
+        .join(" | ");
+    patch.lpr_last_error = errorSummary.slice(0, 4000);
+  }
+  await residentDocRef.set(patch, {merge: true});
+  return result;
+}
+
+/**
  * Retries LPR sync for one resident doc already marked as pending.
  * @param {FirebaseFirestore.QueryDocumentSnapshot} residentDoc
  * @return {Promise<Object>}
@@ -1237,31 +1416,13 @@ async function retryPendingLprSyncForResident(residentDoc) {
   }
 
   const cars = normalizePlateArray(resident.cars || []);
-  const allCars = await buildAllCarsForSync(houseNo, cars);
-  const result = await syncLprCarDiff({
-    houseNo,
-    oldCars: cars,
-    newCars: cars,
-    allCars,
-  });
+  const result = await syncResidentCarsToLpr(
+      residentDoc.ref, houseNo, cars, cars);
 
   const patch = {
-    lpr_last_sync: new Date().toISOString(),
     lpr_last_retry_at: new Date().toISOString(),
-    lpr_sync_pending: !result.ok,
     lpr_sync_retry_count: admin.firestore.FieldValue.increment(1),
   };
-
-  if (result.ok) {
-    patch.lpr_last_error = "";
-  } else {
-    const errorSummary = result.results
-        .flatMap((cameraResult) => (cameraResult.errors || []).map((err) =>
-          `${cameraResult.camera} ${err.action} ${err.plate}: ${err.error}`,
-        ))
-        .join(" | ");
-    patch.lpr_last_error = errorSummary.slice(0, 4000);
-  }
 
   await residentDoc.ref.set(patch, {merge: true});
 
@@ -1283,6 +1444,56 @@ async function retryPendingLprSyncForResident(residentDoc) {
 
   return result;
 }
+
+/**
+ * Backstops resident car edits that bypass the normal resident/admin update
+ * endpoints, so direct Firestore writes still reach both LPR cameras.
+ */
+exports.residentLprSyncBackfill = onDocumentUpdated(
+    {
+      document: `${RESIDENTS_COLLECTION}/{residentId}`,
+      memory: "512MiB",
+      timeoutSeconds: 120,
+    },
+    async (event) => {
+      const before = event.data && event.data.before.data() || {};
+      const after = event.data && event.data.after.data() || {};
+      const beforeCars = normalizePlateArray(before.cars || []);
+      const afterCars = normalizePlateArray(after.cars || []);
+      if (beforeCars.length === afterCars.length &&
+          beforeCars.every((plate, index) => plate === afterCars[index])) {
+        return;
+      }
+
+      const writerRole = String(after.updatedBy || "").trim().toLowerCase();
+      if ((writerRole === "resident" || writerRole === "admin") &&
+          after.updatedByIp) {
+        return;
+      }
+
+      const houseNo = normalizeHouseNo(after.house_no || after.houseNo || "");
+      if (!houseNo) {
+        return;
+      }
+
+      try {
+        const result = await syncResidentCarsToLpr(
+            event.data.after.ref, houseNo, beforeCars, afterCars);
+        logger.info("residentLprSyncBackfill complete", {
+          residentId: event.params.residentId,
+          houseNo,
+          added: result.toAdd,
+          removed: result.toRemove,
+        });
+      } catch (error) {
+        logger.warn("residentLprSyncBackfill failed", {
+          residentId: event.params.residentId,
+          houseNo,
+          error: String(error.message || error),
+        });
+      }
+    },
+);
 
 /**
  * Builds the canonical LPR plate set and house ownership map from Firestore.
@@ -2063,6 +2274,9 @@ function shouldAgentCAudit(event, residentSet) {
  * @return {Promise<Object>}
  */
 async function analyzeAgentCImage(source) {
+  // Required lazily: sharp is a native module and this is its only caller, so
+  // loading it at module scope would tax the cold start of every function.
+  const sharp = require("sharp");
   const metadata = await sharp(source).metadata();
   const width = Number(metadata.width || 0);
   const height = Number(metadata.height || 0);
@@ -2296,6 +2510,18 @@ function getTrafficDayRange(reportDate, startHour = 0) {
   const startEpoch = Date.parse(`${cleanDate}T${sh}:00:00+07:00`);
   const endEpoch = Date.parse(`${cleanDate}T23:59:59.999+07:00`) + 1;
   return {reportDate: cleanDate, startEpoch, endEpoch};
+}
+
+/**
+ * Formats a Bangkok time label as HH:MM.
+ * @param {number} hour
+ * @param {number} minute
+ * @return {string}
+ */
+function formatBangkokClock(hour, minute = 0) {
+  const h = Math.max(0, Math.min(23, Number(hour) || 0));
+  const m = Math.max(0, Math.min(59, Number(minute) || 0));
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
 /**
@@ -2554,6 +2780,47 @@ async function buildDailyTrafficReport(
 }
 
 /**
+ * Strips a full daily traffic report down to what's safe to show any
+ * logged-in resident: aggregate resident in/out counts (no houses or
+ * plates) plus the full external/visitor plate list (make/model/color,
+ * in/out times) since that isn't privacy-sensitive to residents.
+ * @param {Object} report Output of buildDailyTrafficReport.
+ * @return {Object}
+ */
+function toVisitorBoardReport(report) {
+  return {
+    reportDate: report.reportDate,
+    generatedAt: report.generatedAt,
+    timeRange: report.timeRange,
+    totalDetections: report.totalDetections,
+    uniqueCars: report.uniqueCars,
+    residentCars: report.residentCars,
+    residentEntryCars: report.residentEntryCars,
+    residentExitCars: report.residentExitCars,
+    externalCars: report.externalCars,
+    externalEntryCars: report.externalEntryCars,
+    externalExitCars: report.externalExitCars,
+    unreadableDetections: report.unreadableDetections,
+    externalPlates: (report.externalPlates || []).map((row) => ({
+      plate: row.plate,
+      firstTime: row.firstTime,
+      entryTime: row.entryTime,
+      exitTime: row.exitTime,
+      // confidence travels with the attributes so /visitorboard/ can apply the
+      // same LPR_VISION_MIN_CONFIDENCE cut the Flex cards do. Without it the
+      // board had no way to tell a confident read from a guess and showed
+      // both identically.
+      vehicleVision: row.vehicleVision ? {
+        make: row.vehicleVision.make,
+        model: row.vehicleVision.model,
+        color: row.vehicleVision.color,
+        confidence: row.vehicleVision.confidence,
+      } : null,
+    })),
+  };
+}
+
+/**
  * Searches traffic events for one plate across all stored dates.
  * @param {string} rawPlate
  * @return {Promise<Object>}
@@ -2688,6 +2955,139 @@ async function buildPlateSearchReport(rawPlate) {
 }
 
 /**
+ * Searches traffic events for every registered vehicle at one house.
+ * @param {string} rawHouseNo
+ * @return {Promise<Object>}
+ */
+async function buildHouseSearchReport(rawHouseNo) {
+  const houseNo = normalizeHouseNo(rawHouseNo);
+  if (!/^38\/\d{1,2}$/.test(houseNo)) {
+    const error = new Error("Invalid house number");
+    error.status = 400;
+    throw error;
+  }
+
+  const expected = await buildExpectedLprState();
+  const plates = expected.plates.filter((plate) =>
+    (expected.plateHouses[plate] || []).includes(houseNo));
+  const chunks = [];
+  for (let index = 0; index < plates.length; index += 30) {
+    chunks.push(plates.slice(index, index + 30));
+  }
+  const eventSnaps = await Promise.all(chunks.map((chunk) =>
+    db.collection(LPR_TRAFFIC_EVENTS_COLLECTION)
+        .where("plate", "in", chunk)
+        .get()));
+  const events = eventSnaps.flatMap((snap) => snap.docs.map((docSnap) => ({
+    id: docSnap.id,
+    ...docSnap.data(),
+  })))
+      .filter(isReadableLprEvent)
+      .sort((a, b) =>
+        (a.capturedAtEpoch || 0) - (b.capturedAtEpoch || 0));
+
+  const profileRows = await attachVehicleProfiles(plates.map((plate) => ({
+    plate,
+  })));
+  const profilesByPlate = {};
+  profileRows.forEach((row) => {
+    profilesByPlate[row.plate] = row.vehicleVision || null;
+  });
+
+  const countsByPlate = {};
+  const eventGroups = new Map();
+  events.forEach((event) => {
+    const epoch = Number(event.capturedAtEpoch || 0);
+    if (!epoch) return;
+    countsByPlate[event.plate] = (countsByPlate[event.plate] || 0) + 1;
+    const reportDate = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Bangkok",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date(epoch));
+    const group = eventGroups.get(reportDate) || {
+      reportDate,
+      dateLabel: formatBangkokDateLabel(epoch),
+      firstEpoch: epoch,
+      lastEpoch: epoch,
+      entryCount: 0,
+      exitCount: 0,
+      events: [],
+    };
+    group.firstEpoch = Math.min(group.firstEpoch, epoch);
+    group.lastEpoch = Math.max(group.lastEpoch, epoch);
+    if (event.direction === "entry") group.entryCount += 1;
+    if (event.direction === "exit") group.exitCount += 1;
+    group.events.push({
+      eventId: event.id,
+      reportDate,
+      capturedAt: event.capturedAt || "",
+      capturedAtEpoch: epoch,
+      time: formatBangkokHm(epoch),
+      direction: event.direction || "",
+      directionLabel: event.direction === "entry" ? "เข้า" :
+        event.direction === "exit" ? "ออก" : "ผ่าน",
+      cameraId: event.cameraId || "",
+      imageUrl: lprEventImageUrl(event),
+      plate: event.plate,
+      displayPlate: displayPlate(event.plate),
+      houses: expected.plateHouses[event.plate] || [houseNo],
+      vehicleVision: profilesByPlate[event.plate] || null,
+    });
+    eventGroups.set(reportDate, group);
+  });
+
+  const dateGroups = Array.from(eventGroups.values())
+      .sort((a, b) => b.firstEpoch - a.firstEpoch)
+      .map((group) => ({
+        ...group,
+        eventCount: group.events.length,
+        firstTime: formatBangkokHm(group.firstEpoch),
+        lastTime: formatBangkokHm(group.lastEpoch),
+        timeRange: `${formatBangkokHm(group.firstEpoch)}–${
+          formatBangkokHm(group.lastEpoch)
+        }`,
+        events: group.events.sort((a, b) =>
+          b.capturedAtEpoch - a.capturedAtEpoch),
+      }));
+  const epochs = events.map((event) =>
+    Number(event.capturedAtEpoch || 0)).filter(Boolean);
+  const firstEpoch = epochs.length ? Math.min(...epochs) : null;
+  const lastEpoch = epochs.length ? Math.max(...epochs) : null;
+
+  return {
+    queryType: "house",
+    queryHouseNo: houseNo,
+    generatedAt: new Date().toISOString(),
+    summary: {
+      houseNo,
+      registeredCars: plates.length,
+      activeCars: Object.keys(countsByPlate).length,
+      totalEvents: events.length,
+      totalDays: dateGroups.length,
+      entryEvents: events.filter((event) =>
+        event.direction === "entry").length,
+      exitEvents: events.filter((event) =>
+        event.direction === "exit").length,
+      firstLabel: firstEpoch ?
+        `${formatBangkokDateLabel(firstEpoch)} ${
+          formatBangkokHm(firstEpoch)} น.` : "",
+      lastLabel: lastEpoch ?
+        `${formatBangkokDateLabel(lastEpoch)} ${
+          formatBangkokHm(lastEpoch)} น.` : "",
+      vehicles: plates.map((plate) => ({
+        plate,
+        displayPlate: displayPlate(plate),
+        eventCount: countsByPlate[plate] || 0,
+        vehicleVision: profilesByPlate[plate] || null,
+      })),
+    },
+    dateGroups,
+  };
+}
+
+/**
  * Builds the shared "Pattra Watch" overview Flex card used by both the daily
  * and the night report. Leads with the total cars through the system, then
  * splits into resident (by house) and visitor (listed) plus unreadable.
@@ -2758,8 +3158,6 @@ function buildPattraWatchFlex(report, opts) {
   const dateText = new Intl.DateTimeFormat("th-TH", {
     dateStyle: "long", timeZone: "Asia/Bangkok",
   }).format(new Date(`${report.reportDate}T12:00:00+07:00`));
-  const officerName = String(report.securityOfficerName || "").trim();
-  const officerLine = officerName ? `รปภ. ${officerName}` : "";
   const stat = (value, label, color, sub) => ({
     type: "box", layout: "vertical", flex: 1, contents: [
       {type: "text", text: String(value), size: "xxl", weight: "bold",
@@ -2864,6 +3262,11 @@ function buildPattraWatchFlex(report, opts) {
   });
   const visitorTimeContents = (row) => {
     const contents = [];
+    // Exit shown before entry means either a camera clock problem or a car
+    // that left and came back — either way the pair needs a human look.
+    if (row.entryTime && row.exitTime && row.exitTime < row.entryTime) {
+      contents.push(timeSpan("⚠️ ", t.orange));
+    }
     if (row.entryTime) {
       contents.push(timeSpan(row.entryTime, t.green, "bold"));
     } else if (!row.exitTime) {
@@ -2915,6 +3318,22 @@ function buildPattraWatchFlex(report, opts) {
   let shown = report.externalCars === 0 ?
     0 : Math.min(report.externalCars, MAX);
   const visitorRows = composeVisitorRows(shown);
+  // A camera with zero events across the whole window almost certainly
+  // stopped notifying (e.g. both cameras went silent 2026-07-19 23:54) —
+  // surface it on the card instead of silently reporting half the traffic.
+  const silentCameras = Object.entries(report.cameraCounts || {})
+      .filter(([, count]) => !count)
+      .map(([camId]) => camId === "8241" ? "กล้องขาเข้า" :
+        camId === "8242" ? "กล้องขาออก" : `กล้อง ${camId}`);
+  const cameraWarning = silentCameras.length ? [{
+    type: "box", layout: "vertical", margin: "lg", paddingAll: "10px",
+    backgroundColor: night ? "#4A3428" : "#FDECEA", cornerRadius: "md",
+    contents: [
+      {type: "text", size: "xs", weight: "bold", color: t.red, wrap: true,
+        text: `⚠️ ${silentCameras.join(" และ ")}ไม่ส่งข้อมูลเลยในช่วงนี้ ` +
+          "ยอดรถอาจต่ำกว่าจริง — โปรดตรวจสอบกล้อง"},
+    ],
+  }] : [];
   const message = {
     type: "flex",
     altText: night ? `เช้านี้: รถเข้า-ออก ${report.uniqueCars} คัน` :
@@ -2937,15 +3356,6 @@ function buildPattraWatchFlex(report, opts) {
                     {type: "text", text: `ช่วงเวลา ${windowText} น.`,
                       size: "xxs", color: t.label, wrap: false,
                       adjustMode: "shrink-to-fit"},
-                    ...(officerLine ? [{
-                      type: "text",
-                      text: officerLine,
-                      size: "xxs",
-                      color: t.orange,
-                      wrap: false,
-                      adjustMode: "shrink-to-fit",
-                      margin: "xs",
-                    }] : []),
                   ]},
               ]},
               {type: "image", url: t.logo, size: "90px", flex: 3,
@@ -2970,6 +3380,7 @@ function buildPattraWatchFlex(report, opts) {
                   io(report.externalEntryCars, report.externalExitCars)),
               stat(report.unreadableDetections, "สแกนไม่พบ", t.red),
             ]},
+          ...cameraWarning,
           ...(night ? [] : [buildHeatmap()]),
           {type: "separator", margin: "lg", color: t.line},
           {type: "box", layout: "horizontal", margin: "lg",
@@ -3031,7 +3442,8 @@ async function runDailyTrafficReport(reportDate, sendLine = true,
   let lineTargetId = "";
   if (sendLine) {
     try {
-      const targetId = targetIdOverride || await getDailyTrafficTargetId();
+      const targetId = targetIdOverride ||
+        await resolveLineFlexTargetId("daily", getDailyTrafficTargetId);
       if (!targetId) throw new Error("Daily traffic LINE group is not set");
       lineTargetId = targetId;
       await sendLinePushMessages(targetId, [
@@ -3042,7 +3454,7 @@ async function runDailyTrafficReport(reportDate, sendLine = true,
       lineError = String(error.message || error).slice(0, 500);
     }
   } else {
-    await getDailyTrafficTargetId();
+    await resolveLineFlexTargetId("daily", getDailyTrafficTargetId);
   }
   await reportRef.set({
     ...report,
@@ -3071,16 +3483,21 @@ function getTodayBangkokDate() {
  * Builds the epoch range for the overnight window of one Bangkok date.
  * @param {string} reportDate YYYY-MM-DD
  * @param {number} startHour inclusive start hour (default 0)
+ * @param {number} startMinute inclusive start minute (default 0)
  * @param {number} endHour exclusive end hour (default 7)
+ * @param {number} endMinute exclusive end minute (default 0)
  * @return {{reportDate: string, startHour: number, endHour: number,
  *   startEpoch: number, endEpoch: number}}
  */
-function getOvernightRange(reportDate, startHour = 0, endHour = 7) {
+function getOvernightRange(reportDate, startHour = 0, startMinute = 0,
+    endHour = 7, endMinute = 0) {
   const cleanDate = String(reportDate || "").slice(0, 10);
   const sh = String(startHour).padStart(2, "0");
+  const sm = String(startMinute).padStart(2, "0");
   const eh = String(endHour).padStart(2, "0");
-  const startEpoch = Date.parse(`${cleanDate}T${sh}:00:00+07:00`);
-  const endEpoch = Date.parse(`${cleanDate}T${eh}:00:00+07:00`);
+  const em = String(endMinute).padStart(2, "0");
+  const startEpoch = Date.parse(`${cleanDate}T${sh}:${sm}:00+07:00`);
+  const endEpoch = Date.parse(`${cleanDate}T${eh}:${em}:00+07:00`);
   return {reportDate: cleanDate, startHour, endHour, startEpoch, endEpoch};
 }
 
@@ -3099,17 +3516,20 @@ function formatBangkokHm(epoch) {
 }
 
 /**
- * Builds the overnight (default 00:00–07:00) security report from LPR events.
+ * Builds the overnight (default 00:00–07:30) security report from LPR events.
  * Splits readable detections into resident vs external cars and lists the
  * external plates so the night shift can review who came through.
  * @param {string} reportDate YYYY-MM-DD
  * @param {number} startHour
+ * @param {number} startMinute
  * @param {number} endHour
+ * @param {number} endMinute
  * @return {Promise<Object>}
  */
 async function buildOvernightSecurityReport(reportDate, startHour = 0,
-    endHour = 7) {
-  const range = getOvernightRange(reportDate, startHour, endHour);
+    startMinute = 0, endHour = 7, endMinute = 30) {
+  const range = getOvernightRange(
+      reportDate, startHour, startMinute, endHour, endMinute);
   const [eventSnap, expected] = await Promise.all([
     db.collection(LPR_TRAFFIC_EVENTS_COLLECTION)
         .where("capturedAtEpoch", ">=", range.startEpoch)
@@ -3190,8 +3610,8 @@ async function buildOvernightSecurityReport(reportDate, startHour = 0,
 
   return {
     reportDate: range.reportDate,
-    windowLabel: `${String(range.startHour).padStart(2, "0")}:00–` +
-      `${String(range.endHour).padStart(2, "0")}:00`,
+    windowLabel: `${formatBangkokClock(startHour, startMinute)}–` +
+      `${formatBangkokClock(endHour, endMinute)}`,
     startHour: range.startHour,
     endHour: range.endHour,
     generatedAt: new Date().toISOString(),
@@ -3248,30 +3668,40 @@ function chunkArray(items, size) {
  * Builds an arbitrary Bangkok time range, including cross-midnight windows.
  * @param {string} reportDate
  * @param {number} startHour
+ * @param {number} startMinute
  * @param {number} endHour
+ * @param {number} endMinute
  * @return {Object}
  */
-function getSecurityAuditRange(reportDate, startHour, endHour) {
+function getSecurityAuditRange(reportDate, startHour, startMinute,
+    endHour, endMinute) {
   const cleanDate = String(reportDate || getTodayBangkokDate()).slice(0, 10);
   const start = Number.isFinite(Number(startHour)) ? Number(startHour) : 7;
+  const startMin = Number.isFinite(Number(startMinute)) ?
+    Number(startMinute) : 30;
   const end = Number.isFinite(Number(endHour)) ? Number(endHour) : 19;
+  const endMin = Number.isFinite(Number(endMinute)) ? Number(endMinute) : 30;
   const startEpoch = Date.parse(
-      `${cleanDate}T${String(start).padStart(2, "0")}:00:00+07:00`,
+      `${cleanDate}T${String(start).padStart(2, "0")}:` +
+      `${String(startMin).padStart(2, "0")}:00+07:00`,
   );
   let endEpoch = Date.parse(
-      `${cleanDate}T${String(end).padStart(2, "0")}:00:00+07:00`,
+      `${cleanDate}T${String(end).padStart(2, "0")}:` +
+      `${String(endMin).padStart(2, "0")}:00+07:00`,
   );
-  const crossesMidnight = end <= start;
+  const crossesMidnight = end < start || (end === start && endMin <= startMin);
   if (crossesMidnight) endEpoch += 24 * 60 * 60 * 1000;
   return {
     reportDate: cleanDate,
     startHour: start,
+    startMinute: startMin,
     endHour: end,
+    endMinute: endMin,
     startEpoch,
     endEpoch,
     crossesMidnight,
-    windowLabel: `${String(start).padStart(2, "0")}:00–` +
-      `${String(end).padStart(2, "0")}:00`,
+    windowLabel: `${formatBangkokClock(start, startMin)}–` +
+      `${formatBangkokClock(end, endMin)}`,
     shift: crossesMidnight || start >= 19 ? "night" : "day",
   };
 }
@@ -3373,37 +3803,45 @@ async function buildSecurityAuditTrafficSlice(range) {
  * Builds the guard-audit report card using daily traffic + visitor log data.
  * @param {string} reportDate
  * @param {number} startHour
+ * @param {number} startMinute
  * @param {number} endHour
+ * @param {number} endMinute
  * @param {string} officerNameOverride
  * @return {Promise<Object>}
  */
 async function buildSecurityAuditReport(reportDate, startHour = 7,
-    endHour = 19, officerNameOverride = "") {
-  const range = getSecurityAuditRange(reportDate, startHour, endHour);
+    startMinute = 30, endHour = 19, endMinute = 30,
+    officerNameOverride = "") {
+  const scheduleRange = getSecurityAuditRange(
+      reportDate, startHour, startMinute, endHour, endMinute);
+  const reportRange = scheduleRange.shift === "night" ?
+    getSecurityAuditRange(reportDate, 19, 0, 7, 0) :
+    getSecurityAuditRange(reportDate, 7, 0, 19, 0);
   const nextDate = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Bangkok",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).format(new Date(range.startEpoch + 24 * 60 * 60 * 1000));
-  const visitDates = [range.reportDate];
-  if (range.crossesMidnight) visitDates.push(nextDate);
+  }).format(new Date(reportRange.startEpoch + 24 * 60 * 60 * 1000));
+  const visitDates = [reportRange.reportDate];
+  if (reportRange.crossesMidnight) visitDates.push(nextDate);
   const [trafficReport, visitorSnaps, officerName] = await Promise.all([
-    buildSecurityAuditTrafficSlice(range),
+    buildSecurityAuditTrafficSlice(reportRange),
     Promise.all(visitDates.map((visitDate) =>
       db.collection(VISITOR_INTAKE_COLLECTION)
           .where("visitDate", "==", visitDate)
           .limit(500)
           .get(),
     )),
-    getSecurityShiftOfficerName(range.shift),
+    getSecurityShiftOfficerName(reportRange.shift),
   ]);
   const visitorRecords = visitorSnaps.flatMap((snap) => snap.docs)
       .map((docSnap) => ({id: docSnap.id, ...(docSnap.data() || {})}))
       .filter((record) => {
         const createdAtMs = record.createdAt && record.createdAt.toMillis ?
           record.createdAt.toMillis() : 0;
-        return createdAtMs >= range.startEpoch && createdAtMs < range.endEpoch;
+        return createdAtMs >= reportRange.startEpoch &&
+          createdAtMs < reportRange.endEpoch;
       });
 
   const visitorCarMap = new Map();
@@ -3422,7 +3860,7 @@ async function buildSecurityAuditReport(reportDate, startHour = 7,
     if (vehicleType === "รถมอเตอร์ไซค์") {
       visitorMotorcycles.push(record);
     }
-    const label = visitorPurposeLabel(
+    const label = visitorReportPurposeLabel(
         record.purposeCategory || "unknown",
         record.purposeText || "",
     );
@@ -3445,9 +3883,9 @@ async function buildSecurityAuditReport(reportDate, startHour = 7,
     missingPlatesDisplay.length);
 
   return {
-    reportDate: range.reportDate,
-    windowLabel: range.windowLabel,
-    shift: range.shift,
+    reportDate: reportRange.reportDate,
+    windowLabel: reportRange.windowLabel,
+    shift: reportRange.shift,
     generatedAt: new Date().toISOString(),
     securityOfficerName: String(officerNameOverride || officerName || "")
         .trim(),
@@ -3457,6 +3895,7 @@ async function buildSecurityAuditReport(reportDate, startHour = 7,
     percent: externalPlates.length ?
       Math.round((visitorCarPlates.length / externalPlates.length) * 100) : 0,
     unreadable: trafficReport.unreadableDetections || 0,
+    scanUnreadable: trafficReport.unreadableDetections || 0,
     motorcycleCount: visitorMotorcycles.length,
     purposes: Array.from(purposeCounts.entries())
         .map(([label, count]) => ({label, count}))
@@ -3496,37 +3935,42 @@ function buildSecurityAuditFlexMessage(report) {
     redBg: "#FCEBEB",
   };
   const dateText = new Intl.DateTimeFormat("th-TH", {
-    dateStyle: "long",
+    dateStyle: "medium",
     timeZone: "Asia/Bangkok",
   }).format(new Date(`${report.reportDate}T12:00:00+07:00`));
-  const timeText = `ช่วงเวลา ${report.windowLabel} น.`;
+  const timeText = `${report.displayWindowLabel || report.windowLabel} น.`;
   const shiftTitle = report.shift === "night" ?
     "ตรวจงาน รปภ. กะกลางคืน" : "ตรวจงาน รปภ. กะกลางวัน";
-  const officerLine = report.securityOfficerName ?
-    `รปภ. ${report.securityOfficerName}` : "";
   const stat = (value, label, color) => ({
     type: "box",
     layout: "vertical",
     flex: 1,
     backgroundColor: t.softCard,
-    cornerRadius: "10px",
-    paddingAll: "10px",
+    cornerRadius: "9px",
+    paddingAll: "8px",
     contents: [
-      {type: "text", text: String(value), size: "xl", weight: "bold",
+      {type: "text", text: String(value), size: "md", weight: "bold",
         color, align: "center"},
-      {type: "text", text: label, size: "xs", color: t.label,
+      {type: "text", text: label, size: "xxs", color: t.label,
         align: "center", margin: "xs", wrap: true},
     ],
+  });
+  const statRow = (items) => ({
+    type: "box",
+    layout: "horizontal",
+    margin: "sm",
+    spacing: "xs",
+    contents: items,
   });
   const plateBadge = (plate) => ({
     type: "box",
     layout: "vertical",
     width: "72px",
-    height: "34px",
+    height: "30px",
     borderColor: t.text,
     borderWidth: "1.5px",
-    cornerRadius: "8px",
-    paddingAll: "5px",
+    cornerRadius: "7px",
+    paddingAll: "4px",
     justifyContent: "center",
     alignItems: "center",
     contents: [
@@ -3539,7 +3983,7 @@ function buildSecurityAuditFlexMessage(report) {
       .map((row) => ({
         type: "box",
         layout: "horizontal",
-        spacing: "xs",
+        spacing: "sm",
         margin: "sm",
         contents: row.map((plate) => plateBadge(plate)),
       }));
@@ -3569,50 +4013,43 @@ function buildSecurityAuditFlexMessage(report) {
     margin: "sm",
     contents: [
       {type: "text", text: item.label, size: "sm", color: t.text,
-        flex: 4, wrap: false, adjustMode: "shrink-to-fit"},
+        flex: 4, wrap: true},
       {type: "text", text: `${item.count} รายการ`, size: "sm",
-        color: t.orange, weight: "bold", align: "end", flex: 2},
+        weight: "bold", color: t.orange, align: "end", flex: 2,
+        wrap: false, adjustMode: "shrink-to-fit"},
     ],
   }));
-  const progressFlex = Math.max(1, Math.min(100, report.percent || 0));
+  const performancePercent = Math.max(0, Math.min(100, report.percent || 0));
+  const progressFlex = Math.max(1, Math.min(100, performancePercent));
   const progressBgFlex = Math.max(1, 100 - progressFlex);
-  const percentColor = (report.percent || 0) >= 80 ? t.green :
-    (report.percent || 0) >= 50 ? t.orange : t.red;
-  const percentBg = (report.percent || 0) >= 80 ? t.greenBg :
-    (report.percent || 0) >= 50 ? t.orangeBg : t.redBg;
+  const percentColor = performancePercent >= 80 ? t.green :
+    performancePercent >= 50 ? t.orange : t.red;
+  const scanUnreadable = Number(
+      report.scanUnreadable || report.unreadable || 0,
+  );
   return {
     type: "flex",
-    altText: `ตรวจงาน รปภ. ${dateText}: ตรวจได้ ${report.percent}%`,
+    altText: `ตรวจงาน รปภ. ${dateText}: ประเมิน รปภ. ${performancePercent}%`,
     contents: {
       type: "bubble",
       size: "giga",
       header: {
         type: "box",
         layout: "vertical",
-        paddingAll: "18px",
+        paddingAll: "14px",
         backgroundColor: t.headBg,
         contents: [
-          {type: "text", text: shiftTitle, size: "lg",
+          {type: "text", text: shiftTitle, size: "md",
             weight: "bold", color: t.title, wrap: true},
-          {type: "text", text: dateText, size: "sm", color: t.label,
-            margin: "xs", wrap: false, adjustMode: "shrink-to-fit"},
-          {type: "text", text: timeText, size: "sm", color: t.label,
-            margin: "xs", wrap: false, adjustMode: "shrink-to-fit"},
-          ...(officerLine ? [{
-            type: "text",
-            text: officerLine,
-            size: "xs",
-            color: t.orange,
-            margin: "xs",
-            wrap: false,
-            adjustMode: "shrink-to-fit",
-          }] : []),
+          {type: "text", text: `${dateText} · ${timeText}`, size: "xs",
+            color: t.label, margin: "sm", wrap: false,
+            adjustMode: "shrink-to-fit"},
         ],
       },
       body: {
         type: "box",
         layout: "vertical",
-        paddingAll: "18px",
+        paddingAll: "14px",
         backgroundColor: t.bodyBg,
         contents: [
           {
@@ -3620,29 +4057,25 @@ function buildSecurityAuditFlexMessage(report) {
             layout: "vertical",
             backgroundColor: t.cardBg,
             cornerRadius: "12px",
-            paddingAll: "16px",
+            paddingAll: "13px",
             contents: [
               {type: "text",
-                text: "รถยนต์ Visitor เข้า-ออกโครงการทั้งหมด",
-                size: "sm",
+                text: "รถยนต์ Visitor ที่อ่านทะเบียนได้ทั้งหมด",
+                size: "xs",
                 weight: "bold", color: t.label, align: "center"},
-              {type: "text", text: `${report.carTotal} คัน`, size: "4xl",
-                weight: "bold", color: t.green, align: "center", margin: "xs"},
+              {type: "text", text: `${report.carTotal} คัน`, size: "xl",
+                weight: "bold", color: t.green, align: "center",
+                margin: "xs"},
+              statRow([
+                stat(`${report.checkedCars} คัน`, "ตรวจแล้ว", t.green),
+                stat(`${report.uncheckedCars} คัน`, "ยังไม่ตรวจบัตร", t.red),
+                stat(`${scanUnreadable} ครั้ง`, "สแกนไม่พบ", t.orange),
+              ]),
               {
                 type: "box",
                 layout: "horizontal",
+                margin: "md",
                 spacing: "sm",
-                margin: "md",
-                contents: [
-                  stat(`${report.checkedCars} คัน`, "ตรวจแล้ว", t.green),
-                  stat(`${report.uncheckedCars} คัน`, "ไม่ได้ตรวจบัตร", t.red),
-                ],
-              },
-              {
-                type: "box",
-                layout: "horizontal",
-                margin: "md",
-                spacing: "md",
                 alignItems: "center",
                 contents: [
                   {
@@ -3650,13 +4083,13 @@ function buildSecurityAuditFlexMessage(report) {
                     layout: "vertical",
                     flex: 1,
                     contents: [
-                      {type: "text", text: "ตรวจบัตรแล้ว", size: "xs",
+                      {type: "text", text: "ประเมิน รปภ.", size: "xs",
                         color: t.label, margin: "none"},
                       {
                         type: "box",
                         layout: "horizontal",
                         height: "8px",
-                        margin: "sm",
+                        margin: "xs",
                         backgroundColor: t.track,
                         cornerRadius: "4px",
                         contents: [
@@ -3673,52 +4106,46 @@ function buildSecurityAuditFlexMessage(report) {
                     ],
                   },
                   {
-                    type: "box",
-                    layout: "vertical",
-                    width: "48px",
-                    height: "48px",
-                    cornerRadius: "24px",
-                    backgroundColor: percentBg,
-                    borderColor: percentColor,
-                    borderWidth: "2px",
-                    justifyContent: "center",
-                    alignItems: "center",
-                    contents: [
-                      {type: "text", text: `${report.percent}%`, size: "xs",
-                        weight: "bold", color: percentColor, align: "center",
-                        wrap: false, adjustMode: "shrink-to-fit"},
-                    ],
+                    type: "text",
+                    text: `${performancePercent}%`,
+                    flex: 0,
+                    size: "md",
+                    weight: "bold",
+                    color: percentColor,
+                    align: "end",
+                    wrap: false,
+                    adjustMode: "shrink-to-fit",
                   },
                 ],
               },
             ],
           },
-          {type: "separator", margin: "lg", color: t.line},
-          {type: "text", text: "ทะเบียนค้างตรวจบัตร", size: "md",
-            weight: "bold", color: t.title, margin: "lg"},
+          {type: "separator", margin: "md", color: t.line},
+          {type: "text", text: "ทะเบียนค้างตรวจบัตร", size: "sm",
+            weight: "bold", color: t.title, margin: "md"},
           ...badgeRows,
-          {type: "separator", margin: "lg", color: t.line},
+          {type: "separator", margin: "md", color: t.line},
           {
             type: "box",
             layout: "horizontal",
-            margin: "lg",
+            margin: "md",
+            alignItems: "center",
             contents: [
               {type: "text",
                 text: "รถมอเตอร์ไซต์เข้า-ออกหมู่บ้านทั้งหมด",
-                size: "sm", weight: "bold", color: t.title, flex: 4,
+                size: "md", weight: "bold", color: t.title, flex: 4,
                 wrap: true},
               {type: "text", text: `${report.motorcycleCount} คัน`,
                 size: "md", weight: "bold", color: t.green, align: "end",
                 flex: 2},
             ],
           },
-          {type: "separator", margin: "lg", color: t.line},
-          {type: "text", text: "เหตุผลที่มาติดต่อ", size: "md",
-            weight: "bold", color: t.title, margin: "lg"},
-          ...(purposeRows.length ? purposeRows : [{
+          {type: "text", text: "เหตุผลที่มาติดต่อ", size: "sm",
+            weight: "bold", color: t.title, margin: "md"},
+          ...(purposeRows.length ? purposeRows.slice(0, 4) : [{
             type: "text",
             text: "ยังไม่มีรายการผู้มาติดต่อในกะนี้",
-            size: "sm",
+            size: "xs",
             color: t.label,
             align: "center",
             margin: "sm",
@@ -3728,7 +4155,7 @@ function buildSecurityAuditFlexMessage(report) {
             text: `ข้อมูลจริง · Pattra Watch · ${
               formatBangkokHm(Date.now())
             } น.`,
-            size: "xxs", color: t.label, align: "center", margin: "lg",
+            size: "xxs", color: t.label, align: "center", margin: "md",
           },
         ],
       },
@@ -3741,18 +4168,23 @@ function buildSecurityAuditFlexMessage(report) {
  * @param {string} reportDate
  * @param {boolean} sendLine
  * @param {number} startHour
+ * @param {number} startMinute
  * @param {number} endHour
+ * @param {number} endMinute
  * @param {string} [targetIdOverride]
  * @param {string} [officerNameOverride]
  * @return {Promise<Object>}
  */
 async function runSecurityAuditReport(reportDate, sendLine = true,
-    startHour = 7, endHour = 19, targetIdOverride = "",
+    startHour = 7, startMinute = 30, endHour = 19, endMinute = 30,
+    targetIdOverride = "",
     officerNameOverride = "") {
   const report = await buildSecurityAuditReport(
       reportDate,
       startHour,
+      startMinute,
       endHour,
+      endMinute,
       officerNameOverride,
   );
   let lineSent = false;
@@ -3760,10 +4192,10 @@ async function runSecurityAuditReport(reportDate, sendLine = true,
   let lineTargetId = "";
   if (sendLine) {
     try {
-      const targetId = targetIdOverride || await getGuardAuditTargetId();
-      if (!targetId) {
-        throw new Error("Guard audit LINE group is not set");
-      }
+      const routeKey = report.shift === "night" ? "guardNight" : "guardDay";
+      const targetId = targetIdOverride ||
+        await resolveLineFlexTargetId(routeKey, getGuardAuditTargetId);
+      if (!targetId) throw new Error("Guard audit LINE group is not set");
       lineTargetId = targetId;
       await sendLinePushMessages(targetId, [
         buildSecurityAuditFlexMessage(report),
@@ -3775,6 +4207,566 @@ async function runSecurityAuditReport(reportDate, sendLine = true,
     }
   }
   return {...report, lineSent, lineError, lineTargetId};
+}
+
+/**
+ * Moves a Bangkok calendar date by a whole number of days.
+ * @param {string} reportDate YYYY-MM-DD
+ * @param {number} dayOffset
+ * @return {string}
+ */
+function shiftBangkokDate(reportDate, dayOffset) {
+  const cleanDate = String(reportDate || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
+    throw new Error("Invalid report date");
+  }
+  const epoch = Date.parse(`${cleanDate}T12:00:00+07:00`) +
+    Number(dayOffset || 0) * 24 * 60 * 60 * 1000;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Bangkok",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(epoch));
+}
+
+/**
+ * Formats a compact Thai date range for the weekly resident card.
+ * @param {string} startDate YYYY-MM-DD
+ * @param {string} endDate YYYY-MM-DD
+ * @return {string}
+ */
+function formatWeeklyThaiDateRange(startDate, endDate) {
+  const format = (date, includeYear) => new Intl.DateTimeFormat("th-TH", {
+    day: "numeric",
+    month: "long",
+    ...(includeYear ? {year: "numeric"} : {}),
+    timeZone: "Asia/Bangkok",
+  }).format(new Date(`${date}T12:00:00+07:00`));
+  const sameYear = startDate.slice(0, 4) === endDate.slice(0, 4);
+  const sameMonth = startDate.slice(0, 7) === endDate.slice(0, 7);
+  if (sameMonth) {
+    const startDay = Number(startDate.slice(8, 10));
+    return `${startDay}–${format(endDate, true)}`;
+  }
+  return `${format(startDate, !sameYear)} – ${format(endDate, true)}`;
+}
+
+/**
+ * Builds a seven-day resident-safe safety summary from Daily Watch and
+ * guard-audit data. The window ends on a completed traffic day.
+ * @param {string} endDate YYYY-MM-DD
+ * @return {Promise<Object>}
+ */
+async function buildWeeklySafetyReport(endDate) {
+  const cleanEndDate = String(endDate || getYesterdayBangkokDate()).trim();
+  const startDate = shiftBangkokDate(cleanEndDate, -6);
+  const reportDates = Array.from({length: 7}, (_, index) =>
+    shiftBangkokDate(startDate, index));
+  const dailyBundles = await Promise.all(reportDates.map(async (reportDate) => {
+    const [traffic, guardDay, guardNight] = await Promise.all([
+      buildDailyTrafficReport(reportDate),
+      buildSecurityAuditReport(reportDate, 7, 30, 19, 30),
+      buildSecurityAuditReport(reportDate, 19, 30, 7, 30),
+    ]);
+    return {traffic, guardDay, guardNight};
+  }));
+  const trafficReports = dailyBundles.map((bundle) => bundle.traffic);
+  const guardReports = dailyBundles.flatMap((bundle) => [
+    bundle.guardDay,
+    bundle.guardNight,
+  ]);
+  const sum = (items, key) => items.reduce(
+      (total, item) => total + Number(item && item[key] || 0), 0);
+  const hourlyCounts = Array.from({length: 24}, (_, hour) =>
+    trafficReports.reduce((total, report) =>
+      total + Number(report.hourlyCounts && report.hourlyCounts[hour] || 0),
+    0));
+  const busiestCount = Math.max(...hourlyCounts, 0);
+  const busiestHour = busiestCount ? hourlyCounts.indexOf(busiestCount) : null;
+  const purposeCounts = new Map();
+  guardReports.forEach((report) => {
+    (report.purposes || []).forEach((item) => {
+      const label = String(item.label || "อื่น ๆ");
+      purposeCounts.set(
+          label,
+          (purposeCounts.get(label) || 0) + Number(item.count || 0),
+      );
+    });
+  });
+  const visitorCars = sum(guardReports, "carTotal");
+  const checkedCars = guardReports.reduce((total, report) => {
+    const carTotal = Number(report.carTotal || 0);
+    return total + Math.min(carTotal, Number(report.checkedCars || 0));
+  }, 0);
+  const uncheckedCars = Math.max(0, visitorCars - checkedCars);
+  const cameraComplete = trafficReports.every((report) =>
+    Number(report.cameraCounts && report.cameraCounts["8241"] || 0) > 0 &&
+    Number(report.cameraCounts && report.cameraCounts["8242"] || 0) > 0);
+  return {
+    startDate,
+    endDate: cleanEndDate,
+    reportDates,
+    dateLabel: formatWeeklyThaiDateRange(startDate, cleanEndDate),
+    generatedAt: new Date().toISOString(),
+    trafficCars: sum(trafficReports, "uniqueCars"),
+    residentCars: sum(trafficReports, "residentCars"),
+    externalCars: sum(trafficReports, "externalCars"),
+    visitorCars,
+    checkedCars,
+    uncheckedCars,
+    checkPercent: visitorCars ?
+      Math.round((checkedCars / visitorCars) * 1000) / 10 : 0,
+    motorcycleCount: sum(guardReports, "motorcycleCount"),
+    unreadableDetections: sum(trafficReports, "unreadableDetections"),
+    busiestHour,
+    busiestCount,
+    hourlyCounts,
+    cameraComplete,
+    purposes: Array.from(purposeCounts.entries())
+        .map(([label, count]) => ({label, count}))
+        .sort((a, b) =>
+          b.count - a.count || a.label.localeCompare(b.label, "th"))
+        .slice(0, 4),
+  };
+}
+
+/**
+ * Builds the resident-facing weekly safety Flex in the selected
+ * Design A / Content B direction.
+ * @param {Object} report
+ * @return {Object}
+ */
+function buildWeeklySafetyFlexMessage(report) {
+  const t = {
+    headBg: "#EFE5D4",
+    bodyBg: "#FFFAF1",
+    cardBg: "#F4ECDF",
+    auditBg: "#F2E7D6",
+    statusBg: "#EDF4E8",
+    ink: "#362C24",
+    muted: "#847568",
+    green: "#547445",
+    greenLight: "#DCE9D6",
+    orange: "#C87338",
+    line: "#E5D9C7",
+    track: "#DED1BF",
+  };
+  const stat = (value, label, color) => ({
+    type: "box",
+    layout: "vertical",
+    flex: 1,
+    backgroundColor: t.cardBg,
+    cornerRadius: "13px",
+    paddingAll: "12px",
+    contents: [
+      {
+        type: "box",
+        layout: "horizontal",
+        alignItems: "center",
+        contents: [
+          {
+            type: "box",
+            layout: "vertical",
+            width: "7px",
+            height: "7px",
+            cornerRadius: "4px",
+            backgroundColor: color,
+            contents: [{type: "filler"}],
+          },
+          {
+            type: "text",
+            text: label,
+            size: "xxs",
+            color: t.muted,
+            margin: "sm",
+          },
+        ],
+      },
+      {
+        type: "text",
+        text: String(value),
+        size: "xl",
+        weight: "bold",
+        color: t.ink,
+        margin: "sm",
+      },
+      {type: "text", text: "คัน · รวมรายวัน", size: "xxs", color: t.muted},
+    ],
+  });
+  const purposeIcons = ["📦", "🛠️", "🏠", "•••"];
+  const purposeRows = (report.purposes || []).map((item, index) => ({
+    type: "box",
+    layout: "horizontal",
+    alignItems: "center",
+    margin: index ? "md" : "sm",
+    contents: [
+      {
+        type: "box",
+        layout: "vertical",
+        width: "26px",
+        height: "26px",
+        cornerRadius: "8px",
+        backgroundColor: t.headBg,
+        justifyContent: "center",
+        alignItems: "center",
+        contents: [{
+          type: "text",
+          text: purposeIcons[index] || "•",
+          size: "xxs",
+          align: "center",
+          color: t.ink,
+        }],
+      },
+      {
+        type: "text",
+        text: item.label,
+        size: "xs",
+        color: t.ink,
+        flex: 4,
+        margin: "sm",
+        wrap: true,
+      },
+      {
+        type: "text",
+        text: `${item.count} รายการ`,
+        size: "xs",
+        weight: "bold",
+        color: t.ink,
+        align: "end",
+        flex: 2,
+        wrap: false,
+        adjustMode: "shrink-to-fit",
+      },
+    ],
+  }));
+  const checkPercent = Math.max(0, Math.min(
+      100, Number(report.checkPercent || 0)));
+  const progressFlex = Math.max(1, Math.round(checkPercent));
+  const remainingFlex = Math.max(1, 100 - progressFlex);
+  const peakText = report.busiestHour === null ? "ยังไม่มีข้อมูลช่วงพีค" :
+    `ช่วงรถหนาแน่นที่สุด ${String(report.busiestHour)
+        .padStart(2, "0")}:00–${String((report.busiestHour + 1) % 24)
+        .padStart(2, "0")}:00 น.`;
+  const cameraText = report.cameraComplete ?
+    "✓ กล้องทางเข้าและทางออกส่งข้อมูลครบตลอดสัปดาห์" :
+    "⚠️ พบช่วงที่กล้องทางเข้าหรือทางออกไม่มีข้อมูล";
+  return {
+    type: "flex",
+    altText: `สรุปความปลอดภัย ${report.dateLabel}: ` +
+      `ตรวจ Visitor ${checkPercent}%`,
+    contents: {
+      type: "bubble",
+      size: "giga",
+      header: {
+        type: "box",
+        layout: "vertical",
+        paddingAll: "18px",
+        backgroundColor: t.headBg,
+        contents: [
+          {
+            type: "text",
+            text: "PATTRA VILLA 8",
+            size: "xs",
+            weight: "bold",
+            color: t.ink,
+          },
+          ...(report.preview ? [{
+            type: "text",
+            text: "ข้อมูลตัวอย่าง · Sandbox",
+            size: "xxs",
+            weight: "bold",
+            color: t.orange,
+            margin: "sm",
+          }] : []),
+          {
+            type: "text",
+            text: "สรุปความปลอดภัยประจำสัปดาห์",
+            size: "lg",
+            weight: "bold",
+            color: t.ink,
+            margin: "lg",
+            wrap: true,
+          },
+          {
+            type: "text",
+            text: report.dateLabel,
+            size: "sm",
+            color: t.muted,
+            margin: "sm",
+          },
+        ],
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        paddingAll: "18px",
+        backgroundColor: t.bodyBg,
+        contents: [
+          {
+            type: "text",
+            text: "เรียนลูกบ้าน สัปดาห์นี้ระบบ Pattra Watch และทีม รปภ. " +
+              "ได้ดูแลการเข้า–ออก พร้อมตรวจผู้มาติดต่ออย่างต่อเนื่อง " +
+              "สรุปภาพรวมได้ดังนี้",
+            size: "xs",
+            color: t.muted,
+            wrap: true,
+            lineSpacing: "5px",
+          },
+          {
+            type: "box",
+            layout: "vertical",
+            backgroundColor: t.green,
+            cornerRadius: "18px",
+            paddingAll: "16px",
+            margin: "lg",
+            contents: [
+              {
+                type: "text",
+                text: "ภาพรวมการเข้า–ออก",
+                size: "xxs",
+                weight: "bold",
+                color: t.greenLight,
+              },
+              {
+                type: "box",
+                layout: "horizontal",
+                alignItems: "flex-end",
+                margin: "sm",
+                contents: [
+                  {
+                    type: "text",
+                    text: String(report.trafficCars),
+                    size: "3xl",
+                    weight: "bold",
+                    color: "#FFFFFF",
+                    flex: 2,
+                  },
+                  {
+                    type: "text",
+                    text: "คัน · ยอดรวมรายวัน",
+                    size: "xs",
+                    weight: "bold",
+                    color: "#FFFFFF",
+                    align: "end",
+                    flex: 3,
+                    margin: "sm",
+                  },
+                ],
+              },
+              {
+                type: "text",
+                text: "สรุปจากรายงาน Daily Watch ตลอด 7 วัน",
+                size: "xxs",
+                color: t.greenLight,
+                margin: "sm",
+              },
+            ],
+          },
+          {
+            type: "box",
+            layout: "horizontal",
+            spacing: "sm",
+            margin: "md",
+            contents: [
+              stat(report.residentCars, "รถลูกบ้าน", t.green),
+              stat(report.externalCars, "รถภายนอก", t.orange),
+            ],
+          },
+          {type: "separator", margin: "lg", color: t.line},
+          {
+            type: "text",
+            text: "🛡️  การตรวจผู้มาติดต่อ",
+            size: "sm",
+            weight: "bold",
+            color: t.ink,
+            margin: "lg",
+          },
+          {
+            type: "box",
+            layout: "vertical",
+            backgroundColor: t.auditBg,
+            cornerRadius: "16px",
+            paddingAll: "14px",
+            margin: "md",
+            contents: [
+              {
+                type: "box",
+                layout: "horizontal",
+                alignItems: "center",
+                contents: [
+                  {
+                    type: "text",
+                    text: "อัตราตรวจและบันทึกข้อมูล",
+                    size: "xs",
+                    weight: "bold",
+                    color: t.ink,
+                    flex: 4,
+                  },
+                  {
+                    type: "text",
+                    text: `${checkPercent}%`,
+                    size: "xl",
+                    weight: "bold",
+                    color: t.green,
+                    align: "end",
+                    flex: 2,
+                  },
+                ],
+              },
+              {
+                type: "box",
+                layout: "horizontal",
+                height: "8px",
+                backgroundColor: t.track,
+                cornerRadius: "4px",
+                margin: "sm",
+                contents: [
+                  {
+                    type: "box",
+                    layout: "vertical",
+                    flex: progressFlex,
+                    backgroundColor: t.green,
+                    cornerRadius: "4px",
+                    contents: [{type: "filler"}],
+                  },
+                  {
+                    type: "box",
+                    layout: "vertical",
+                    flex: remainingFlex,
+                    contents: [{type: "filler"}],
+                  },
+                ],
+              },
+              {
+                type: "box",
+                layout: "horizontal",
+                spacing: "md",
+                margin: "md",
+                contents: [
+                  {
+                    type: "box",
+                    layout: "vertical",
+                    flex: 1,
+                    contents: [
+                      {
+                        type: "text",
+                        text: `${report.checkedCars} คัน`,
+                        size: "md",
+                        weight: "bold",
+                        color: t.ink,
+                      },
+                      {
+                        type: "text",
+                        text: "ตรวจและบันทึกแล้ว",
+                        size: "xxs",
+                        color: t.muted,
+                        margin: "xs",
+                      },
+                    ],
+                  },
+                  {
+                    type: "separator",
+                    color: t.track,
+                  },
+                  {
+                    type: "box",
+                    layout: "vertical",
+                    flex: 1,
+                    contents: [
+                      {
+                        type: "text",
+                        text: `${report.uncheckedCars} คัน`,
+                        size: "md",
+                        weight: "bold",
+                        color: t.ink,
+                      },
+                      {
+                        type: "text",
+                        text: "อยู่ระหว่างตรวจสอบข้อมูล",
+                        size: "xxs",
+                        color: t.muted,
+                        margin: "xs",
+                        wrap: true,
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+          {type: "separator", margin: "lg", color: t.line},
+          {
+            type: "text",
+            text: "ผู้มาติดต่อมาทำอะไรบ้าง",
+            size: "sm",
+            weight: "bold",
+            color: t.ink,
+            margin: "lg",
+          },
+          ...(purposeRows.length ? purposeRows : [{
+            type: "text",
+            text: "ยังไม่มีข้อมูลเหตุผลที่มาติดต่อ",
+            size: "xs",
+            color: t.muted,
+            align: "center",
+            margin: "md",
+          }]),
+          {type: "separator", margin: "lg", color: t.line},
+          {
+            type: "box",
+            layout: "vertical",
+            backgroundColor: t.statusBg,
+            cornerRadius: "12px",
+            paddingAll: "12px",
+            margin: "lg",
+            contents: [
+              {
+                type: "text",
+                text: cameraText,
+                size: "xxs",
+                weight: "bold",
+                color: report.cameraComplete ? t.green : t.orange,
+                wrap: true,
+              },
+              {
+                type: "text",
+                text: `⏰ ${peakText}`,
+                size: "xxs",
+                color: t.green,
+                margin: "sm",
+                wrap: true,
+              },
+              {
+                type: "text",
+                text: `🏍️ มอเตอร์ไซค์ผู้มาติดต่อ ` +
+                  `${report.motorcycleCount} คัน`,
+                size: "xxs",
+                color: t.green,
+                margin: "sm",
+              },
+            ],
+          },
+          {
+            type: "text",
+            text: "ขอบคุณลูกบ้านที่ร่วมกันดูแลความปลอดภัย",
+            size: "xxs",
+            color: t.muted,
+            align: "center",
+            margin: "lg",
+          },
+          {
+            type: "text",
+            text: "Pattra Watch × บันทึกการปฏิบัติงาน รปภ.",
+            size: "xxs",
+            color: t.muted,
+            align: "center",
+            margin: "xs",
+          },
+        ],
+      },
+    },
+  };
 }
 
 /**
@@ -3981,14 +4973,17 @@ async function buildPaymentHeatmapData(opts) {
  * @param {string} reportDate
  * @param {boolean} sendLine
  * @param {number} startHour
+ * @param {number} startMinute
  * @param {number} endHour
+ * @param {number} endMinute
  * @param {string} targetIdOverride registered LINE target for manual tests
  * @return {Promise<Object>}
  */
 async function runOvernightSecurityReport(reportDate, sendLine = true,
-    startHour = 0, endHour = 7, targetIdOverride = "") {
+    startHour = 0, startMinute = 0, endHour = 7, endMinute = 30,
+    targetIdOverride = "") {
   const report = await buildOvernightSecurityReport(
-      reportDate, startHour, endHour);
+      reportDate, startHour, startMinute, endHour, endMinute);
   report.securityOfficerName = await getSecurityShiftOfficerName("night");
   const reportRef = db.collection(LPR_OVERNIGHT_COLLECTION)
       .doc(report.reportDate);
@@ -3997,8 +4992,9 @@ async function runOvernightSecurityReport(reportDate, sendLine = true,
   let lineTargetId = "";
   if (sendLine) {
     try {
-      const targetId = targetIdOverride || await getDailyTrafficTargetId();
-      if (!targetId) throw new Error("Daily traffic LINE group is not set");
+      const targetId = targetIdOverride ||
+        await resolveLineFlexTargetId("night", getDailyTrafficTargetId);
+      if (!targetId) throw new Error("Night watch LINE group is not set");
       lineTargetId = targetId;
       await sendLinePushMessages(targetId, [
         buildOvernightSecurityFlexMessage(report),
@@ -4028,6 +5024,151 @@ async function getLineTargetId() {
 
   const config = configSnap.data() || {};
   return config.groupId || config.roomId || config.userId || null;
+}
+
+/**
+ * Normalizes a LINE flex routing choice.
+ * @param {string} value
+ * @return {string}
+ */
+function normalizeLineFlexRouteChoice(value) {
+  return String(value || "").trim().toLowerCase() === "sandbox" ?
+    "sandbox" : "prd";
+}
+
+/**
+ * Returns the default flex routing map.
+ * @return {Object<string, string>}
+ */
+function getDefaultLineFlexRoutes() {
+  return {...LINE_FLEX_ROUTE_DEFAULTS};
+}
+
+/**
+ * Returns a cleaned LINE target id.
+ * @param {*} value
+ * @return {string}
+ */
+function normalizeLineFlexTargetId(value) {
+  return String(value || "").trim();
+}
+
+/**
+ * Merges known route defaults with saved flow settings.
+ * @param {Object} data
+ * @return {Object<string, {
+ *   sandboxTargetId: string,
+ *   productionTargetId: string,
+ *   activeMode: string,
+ * }>}
+ */
+function normalizeLineFlexFlows(data) {
+  const defaults = getDefaultLineFlexFlows();
+  const rawFlows = data && data.flows && typeof data.flows === "object" ?
+    data.flows : {};
+  const rawRoutes = data && data.routes && typeof data.routes === "object" ?
+    data.routes : {};
+
+  Object.keys(defaults).forEach((routeKey) => {
+    const saved = rawFlows[routeKey] && typeof rawFlows[routeKey] === "object" ?
+      rawFlows[routeKey] : {};
+    defaults[routeKey] = {
+      sandboxTargetId: normalizeLineFlexTargetId(
+          saved.sandboxTargetId || defaults[routeKey].sandboxTargetId,
+      ),
+      productionTargetId: normalizeLineFlexTargetId(
+          saved.productionTargetId || defaults[routeKey].productionTargetId,
+      ),
+      activeMode: normalizeLineFlexRouteChoice(
+          saved.activeMode ||
+          rawRoutes[routeKey] ||
+          defaults[routeKey].activeMode,
+      ),
+    };
+  });
+
+  return defaults;
+}
+
+/**
+ * Reads the central LINE flex routing document.
+ * @return {Promise<FirebaseFirestore.DocumentSnapshot>}
+ */
+async function getLineFlexRoutingDoc() {
+  return db.doc(LINE_FLEX_ROUTING_CONFIG_PATH).get();
+}
+
+/**
+ * Loads the central LINE flex routing config.
+ * @return {Promise<Object>}
+ */
+async function getLineFlexRoutingConfig() {
+  const snap = await getLineFlexRoutingDoc();
+  const data = snap.exists ? snap.data() || {} : {};
+  const flows = normalizeLineFlexFlows(data);
+  const routes = {};
+  const routeTargets = {};
+  Object.keys(flows).forEach((routeKey) => {
+    routes[routeKey] = flows[routeKey].activeMode;
+    routeTargets[routeKey] = {
+      sandbox: {
+        key: "sandbox",
+        label: buildTargetLabelFromId(flows[routeKey].sandboxTargetId),
+        targetId: flows[routeKey].sandboxTargetId,
+      },
+      prd: {
+        key: "prd",
+        label: buildTargetLabelFromId(flows[routeKey].productionTargetId),
+        targetId: flows[routeKey].productionTargetId,
+      },
+    };
+  });
+  return {
+    flows,
+    routes,
+    routeTargets,
+    updatedAt: data.updatedAt || null,
+    updatedBy: data.updatedBy || "",
+  };
+}
+
+/**
+ * Resolves a LINE flex target id from the central routing config.
+ * @param {string} routeKey
+ * @param {Function} [fallbackGetter]
+ * @return {Promise<string|null>}
+ */
+async function resolveLineFlexTargetId(routeKey, fallbackGetter) {
+  const snap = await getLineFlexRoutingDoc();
+  if (snap.exists) {
+    const config = await getLineFlexRoutingConfig();
+    const flow = config.flows && config.flows[routeKey] ?
+      config.flows[routeKey] : null;
+    const env = normalizeLineFlexRouteChoice(flow && flow.activeMode);
+    const targetId = env === "sandbox" ?
+      normalizeLineFlexTargetId(flow && flow.sandboxTargetId) :
+      normalizeLineFlexTargetId(flow && flow.productionTargetId);
+    if (targetId) return targetId;
+  }
+  if (typeof fallbackGetter === "function") {
+    return fallbackGetter();
+  }
+  const defaults = getDefaultLineFlexFlows()[routeKey];
+  if (defaults) {
+    return defaults.activeMode === "sandbox" ?
+      defaults.sandboxTargetId : defaults.productionTargetId;
+  }
+  return LINE_FLEX_SECURITY_PRODUCTION_TARGET_ID;
+}
+
+/**
+ * Gets the sandbox LINE target for public report issues.
+ * This intentionally avoids the live Security group.
+ * @return {Promise<string|null>}
+ */
+async function getReportIssueTargetId() {
+  return resolveLineFlexTargetId("pattraReport", async () =>
+    REPORT_ISSUE_TEST_TARGET_ID);
 }
 
 /**
@@ -4062,24 +5203,26 @@ async function getLprMonitorTargetId() {
  * @return {Promise<string|null>}
  */
 async function getDailyTrafficTargetId() {
-  const trafficRef = db.doc(DAILY_TRAFFIC_CONFIG_PATH);
-  const trafficSnap = await trafficRef.get();
-  if (trafficSnap.exists) {
-    const traffic = trafficSnap.data() || {};
-    return traffic.groupId || traffic.targetId || null;
-  }
+  return resolveLineFlexTargetId("daily", async () => {
+    const trafficRef = db.doc(DAILY_TRAFFIC_CONFIG_PATH);
+    const trafficSnap = await trafficRef.get();
+    if (trafficSnap.exists) {
+      const traffic = trafficSnap.data() || {};
+      return traffic.groupId || traffic.targetId || null;
+    }
 
-  const configSnap = await db.doc(LINE_CONFIG_PATH).get();
-  if (!configSnap.exists) return null;
-  const config = configSnap.data() || {};
-  if (!config.groupId) return null;
-  await trafficRef.set({
-    targetId: config.groupId,
-    groupId: config.groupId,
-    source: "migrated-current-group",
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-  }, {merge: true});
-  return config.groupId;
+    const configSnap = await db.doc(LINE_CONFIG_PATH).get();
+    if (!configSnap.exists) return null;
+    const config = configSnap.data() || {};
+    if (!config.groupId) return null;
+    await trafficRef.set({
+      targetId: config.groupId,
+      groupId: config.groupId,
+      source: "migrated-current-group",
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+    return config.groupId;
+  });
 }
 
 /**
@@ -4099,15 +5242,17 @@ async function getVisitorDailyTargetId() {
  * @return {Promise<string|null>}
  */
 async function getGuardAuditTargetId() {
-  const guardSnap = await db.doc(GUARD_AUDIT_CONFIG_PATH).get();
-  if (guardSnap.exists) {
-    const guard = guardSnap.data() || {};
-    return guard.groupId || guard.targetId || null;
-  }
-  const shiftSnap = await db.doc(SECURITY_SHIFT_CONFIG_PATH).get();
-  if (!shiftSnap.exists) return null;
-  const shift = shiftSnap.data() || {};
-  return shift.groupId || shift.targetId || null;
+  return resolveLineFlexTargetId("guardDay", async () => {
+    const guardSnap = await db.doc(GUARD_AUDIT_CONFIG_PATH).get();
+    if (guardSnap.exists) {
+      const guard = guardSnap.data() || {};
+      return guard.groupId || guard.targetId || null;
+    }
+    const shiftSnap = await db.doc(SECURITY_SHIFT_CONFIG_PATH).get();
+    if (!shiftSnap.exists) return null;
+    const shift = shiftSnap.data() || {};
+    return shift.groupId || shift.targetId || null;
+  });
 }
 
 /**
@@ -4130,6 +5275,19 @@ function maskTargetId(targetId) {
 }
 
 /**
+ * Builds a readable LINE target label from a target id.
+ * @param {string} targetId
+ * @return {string}
+ */
+function buildTargetLabelFromId(targetId) {
+  const cleanTargetId = String(targetId || "").trim();
+  const knownTargets = Object.values(LINE_FLEX_TARGETS);
+  const known = knownTargets.find((item) => item.targetId === cleanTargetId);
+  if (known) return known.label;
+  return `LINE Target ${maskTargetId(cleanTargetId)}`;
+}
+
+/**
  * Builds a readable LINE target label.
  * @param {Object} source
  * @return {string}
@@ -4142,6 +5300,73 @@ function buildTargetLabel(source) {
   if (sourceType === "room") return `LINE Room ${maskTargetId(targetId)}`;
   if (sourceType === "user") return `LINE User ${maskTargetId(targetId)}`;
   return `LINE Target ${maskTargetId(targetId)}`;
+}
+
+/**
+ * Checks whether a LINE label is still generic and should be enriched.
+ * @param {string} label
+ * @return {boolean}
+ */
+function isGenericLineTargetLabel(label) {
+  return /^LINE (Group|Room|User|Target)\b/.test(String(label || "").trim());
+}
+
+/**
+ * Fetches the current LINE group summary name.
+ * @param {string} groupId
+ * @return {Promise<string>}
+ */
+async function fetchLineGroupSummaryName(groupId) {
+  const cleanGroupId = String(groupId || "").trim();
+  if (!cleanGroupId) return "";
+  const response = await fetch(
+      `https://api.line.me/v2/bot/group/${cleanGroupId}/summary`,
+      {
+        headers: {
+          "Authorization": `Bearer ${LINE_CHANNEL_ACCESS_TOKEN.value()}`,
+        },
+        signal: AbortSignal.timeout(10000),
+      },
+  );
+  if (!response.ok) {
+    throw new Error(`LINE group summary failed (${response.status})`);
+  }
+  const data = await response.json().catch(() => ({}));
+  return String(data.groupName || "").trim();
+}
+
+/**
+ * Resolves a friendly LINE target label, using LINE API when needed.
+ * @param {Object} target
+ * @return {Promise<string>}
+ */
+async function resolveFriendlyLineTargetLabel(target) {
+  const baseLabel = String(target && target.label || "").trim();
+  const sourceType = String(
+      target && (target.sourceType || target.type) || "unknown",
+  ).trim().toLowerCase();
+  const targetId = String(
+      target &&
+      (target.targetId || target.groupId || target.roomId || target.userId) ||
+      "",
+  ).trim();
+
+  if (!targetId) return baseLabel || "LINE target";
+  if (baseLabel && !isGenericLineTargetLabel(baseLabel)) return baseLabel;
+
+  if (sourceType === "group") {
+    try {
+      const groupName = await fetchLineGroupSummaryName(targetId);
+      if (groupName) return groupName;
+    } catch (err) {
+      logger.warn("Failed to enrich LINE group label", {
+        groupId: targetId,
+        error: err.message,
+      });
+    }
+  }
+
+  return baseLabel || buildTargetLabelFromId(targetId);
 }
 
 /**
@@ -4311,6 +5536,48 @@ async function getLineTargets() {
 }
 
 /**
+ * Returns known LINE targets for config dropdowns, including hard defaults.
+ * @return {Promise<Array<Object>>}
+ */
+async function getLineFlexTargetOptions() {
+  const optionMap = new Map();
+  Object.values(LINE_FLEX_TARGETS).forEach((target) => {
+    optionMap.set(target.targetId, {
+      targetId: target.targetId,
+      label: target.label,
+      sourceType: target.key,
+      updatedAt: null,
+    });
+  });
+
+  const dynamicTargets = await getLineTargets();
+  dynamicTargets.forEach((target) => {
+    if (!target || !target.targetId) return;
+    optionMap.set(target.targetId, {
+      targetId: target.targetId,
+      label: target.label || buildTargetLabelFromId(target.targetId),
+      sourceType: target.sourceType || "unknown",
+      updatedAt: target.updatedAt || null,
+    });
+  });
+
+  const options = Array.from(optionMap.values());
+  await Promise.all(options.map(async (target) => {
+    const originalLabel = String(target.label || "").trim();
+    const friendlyLabel = await resolveFriendlyLineTargetLabel(target);
+    target.label = friendlyLabel;
+    if (target.targetId && friendlyLabel && friendlyLabel !== originalLabel) {
+      await db.collection(LINE_TARGETS_COLLECTION).doc(target.targetId).set({
+        targetId: target.targetId,
+        label: friendlyLabel,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    }
+  }));
+  return options;
+}
+
+/**
  * Resolves and validates the selected LINE target.
  * @param {string} targetId
  * @return {Promise<Object>}
@@ -4405,9 +5672,22 @@ async function downloadLineMessageContent(messageId) {
   const contentType = response.headers.get("content-type") || "image/jpeg";
   const arrayBuffer = await response.arrayBuffer();
   if (!response.ok) {
-    throw new Error(`LINE content failed (${response.status})`);
+    const error = new Error(`LINE content failed (${response.status})`);
+    error.code = response.status === 410 ?
+      "LINE_CONTENT_UNAVAILABLE" : "LINE_CONTENT_FAILED";
+    error.status = response.status;
+    throw error;
   }
   return {buffer: Buffer.from(arrayBuffer), contentType};
+}
+
+/**
+ * Identifies media that LINE no longer allows the bot to download.
+ * @param {*} error
+ * @return {boolean}
+ */
+function isLineContentUnavailable(error) {
+  return Boolean(error && error.code === "LINE_CONTENT_UNAVAILABLE");
 }
 
 /**
@@ -4458,9 +5738,86 @@ async function saveVisitorIntakeImage(event, logId) {
 function normalizePattraHouseNo(raw) {
   const clean = String(raw || "").trim();
   const prefixed = clean.match(/38\s*\/\s*(\d{1,2})/);
-  const number = prefixed ? Number(prefixed[1]) : Number(clean);
+  const compact = clean.match(/^38([1-9]\d?)$/);
+  const number = prefixed ? Number(prefixed[1]) :
+    compact ? Number(compact[1]) : Number(clean);
   if (!Number.isInteger(number) || number < 1 || number > 69) return "";
   return `38/${number}`;
+}
+
+/**
+ * Extracts every valid Pattra house number mentioned in free-form text.
+ * Intended for guard messages such as "38/1 - 38/7" which means two houses,
+ * not a numeric range.
+ * @param {string} raw
+ * @return {string[]}
+ */
+function extractPattraHouseNos(raw) {
+  const value = String(raw || "").normalize("NFKC");
+  const found = [];
+  const seen = new Set();
+  const addHouse = (rawHouse) => {
+    const houseNo = normalizePattraHouseNo(rawHouse);
+    if (houseNo && !seen.has(houseNo)) {
+      seen.add(houseNo);
+      found.push(houseNo);
+    }
+  };
+  const patterns = [
+    /38\s*\/\s*(\d{1,2})(?!\d)/g,
+    /\b38([1-9]\d?)(?!\d)\b/g,
+    /\b38\s+([1-9]\d?)(?!\d)\b/g,
+    /(?:^|\s)(?:บ้าน|เลขที่|หลายบ้าน\s*บ้าน)\s*(\d{1,2})(?!\d)/gi,
+  ];
+  patterns.forEach((pattern) => {
+    let match = null;
+    while ((match = pattern.exec(value))) {
+      addHouse(match[1] || match[0]);
+    }
+  });
+  const slashList = value.match(
+      /38\s*\/\s*\d{1,2}(?:\s*(?:,|และ|กับ)\s*\d{1,2})+/g,
+  ) || [];
+  slashList.forEach((list) => {
+    const numbers = list.match(/\d{1,2}/g) || [];
+    const suffixes = numbers[0] === "38" ? numbers.slice(1) : numbers;
+    suffixes.slice(0, 8).forEach(addHouse);
+  });
+  const multiHouseIndex = value.search(/หลายบ้าน/i);
+  if (multiHouseIndex >= 0) {
+    const numbers = value.slice(multiHouseIndex).match(/\d{1,2}/g) || [];
+    numbers.slice(0, 8).forEach(addHouse);
+  }
+  const labeledMany = value.match(new RegExp(
+      "(?:หลายบ้าน\\s*บ้าน|บ้าน|เลขที่)\\s*" +
+      "\\d{1,2}(?:\\s*(?:และ|กับ|,|-|–|—)\\s*\\d{1,2})+",
+  ));
+  if (labeledMany) {
+    if (!labeledMany[0].includes("/")) {
+      const numbers = labeledMany[0].match(/\d{1,2}/g) || [];
+      numbers.slice(0, 8).forEach(addHouse);
+    }
+  }
+  return found;
+}
+
+/**
+ * Removes explicit house-number mentions from free-form text while keeping the
+ * rest of the purpose readable.
+ * @param {string} raw
+ * @return {string}
+ */
+function stripPattraHouseNos(raw) {
+  return String(raw || "")
+      .replace(/38\s*\/\s*\d{1,2}(?!\d)/g, " ")
+      .replace(/\b38[1-9]\d?(?!\d)\b/g, " ")
+      .replace(/\b38\s+[1-9]\d?(?!\d)\b/g, " ")
+      .replace(/(^|\s)(?:บ้าน|เลขที่|หลายบ้าน\s*บ้าน)\s*\d{1,2}(?!\d)/gi,
+          "$1")
+      .replace(/\s*(?:และ|กับ|,)\s*\d{1,2}(?!\d)/g, " ")
+      .replace(/\s*[-–—,]\s*/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
 }
 
 // Purpose keyword patterns. Order matters: "grab car / มารับ" (pickup) is
@@ -4469,28 +5826,50 @@ function normalizePattraHouseNo(raw) {
 // pickup EXCEPT when it is immediately picking up a parcel/goods
 // ("มารับพัสดุ", "มารับของ") — those are delivery, handled by the
 // negative lookahead + the extra parcel-pickup tokens in DELIVERY below.
+const VISITOR_LAUNDRY_RE =
+  /ซัก\s*รีด|ซัก\s*แห้ง|(?:รับ|ส่ง|เอา)\s*ผ้า|\blaundry\b/;
 const VISITOR_PICKUP_RE = new RegExp([
   "grab\\s*car", "grabcar", "bolt", "แท็กซี่", "taxi", "รับ-?ส่ง", "รับคน",
-  "รับลูกบ้าน", "ส่งลูกบ้าน", "ไปส่งลูกบ้าน",
+  "รับลูกบ้าน", "ส่งลูกบ้าน", "ไปส่งลูกบ้าน", "มาส่งลูกบ้าน",
+  "ส่งรับบ้าน", "รถลูกบ้าน", "รับรถลูกบ้าน",
   "มารับ(?!\\s*(?:พัสดุ|ของ|เอกสาร|สินค้า|กล่อง|parcel))",
 ].join("|"));
 const VISITOR_FOOD_RE =
-  /grab|food|panda|lineman|line\s*man|robinhood|อาหาร|ส่งอาหาร|ส่งขน/;
+  new RegExp([
+    "grab", "food", "panda", "lineman", "line\\s*man", "robinhood",
+    "rider", "ไรเดอร์", "อาหาร", "ส่งอาหาร", "ส่งขน", "น้ำแข็ง",
+    "น้ําแข็ง",
+  ].join("|"));
 const VISITOR_DELIVERY_RE = new RegExp([
   "shopee", "lazada", "ขนส่ง", "ส่งของ", "ส่งพัสดุ", "พัสดุ", "parcel",
   "รับพัสดุ", "รับของ", "รับเอกสาร", "รับสินค้า",
+  "ส่งเอกสาร", "เอาเอกสาร", "มาเอาเอกสาร",
   "delivery", "flash", "kerry", "j&t", "ไปรษณีย์", "dhl", "ninja", "best",
 ].join("|"));
-const VISITOR_UTILITY_RE =
-  /การไฟฟ้า|การประปา|เจ้าหน้าที่ไฟฟ้า|เจ้าหน้าที่ประปา|3bb|ทีโอที/;
+const VISITOR_UTILITY_RE = new RegExp([
+  "การไฟฟ้า", "การประปา", "เจ้าหน้าที่ไฟฟ้า", "เจ้าหน้าที่ประปา",
+  "3bb", "ทีโอที", "อินเตอร์เน็ต", "internet", "wifi", "ไวไฟ",
+  "fiber", "ไฟเบอร์", "รถขยะ", "ขยะ",
+].join("|"));
 const VISITOR_CONTRACTOR_RE = new RegExp([
   "ช่าง", "ผู้รับเหมา", "รับเหมา", "ซ่อม", "ซ่อมไฟ", "ซ่อมน้ำ",
   "ไฟฟ้า", "ประปา", "ทาสี", "แอร์", "ติดตั้ง", "ก่อสร้าง",
+  "ฉีดปลวก", "ปลวก", "ทำความสะอาด", "แม่บ้าน",
 ].join("|"));
 const VISITOR_OFFICE_RE = /นิติ|นิติบุคคล|สำนักงานนิติ|ออฟฟิศ|office/;
 const VISITOR_COMMON_AREA_RE = new RegExp([
   "ติดต่อนิติ", "นิติบุคคล", "สำนักงานนิติ", "หน้าโครงการ",
   "ติดต่อหน้าโครงการ", "สโมสร", "ติดต่อสโมสร",
+].join("|"));
+const VISITOR_COMMON_AREA_OPERATION_RE = new RegExp([
+  "รถขยะ", "ขยะ", "ผู้รับเหมา", "รับเหมา", "ส่วนกลาง", "งานส่วนกลาง",
+  "ซ่อมส่วนกลาง", "ช่าง.*ส่วนกลาง", "ล้างสระ", "ดูแลสวน", "ตัดหญ้า",
+  "สโมสร", "หน้าโครงการ",
+].join("|"));
+const VISITOR_COMMON_AREA_WORK_RE = new RegExp([
+  "รถขยะ", "ขยะ", "ปรับปรุง", "ก่อสร้าง", "ส่ง\\s*(?:ปูน|วัสดุ)",
+  "ปูนซีเมนต์", "ซ่อม(?:ระบบ)?", "ตัดหญ้า", "ดูแลสวน", "ล้างสระ",
+  "ไม้กั้น",
 ].join("|"));
 const VISITOR_CONTACT_RE =
   /มาติดต่อ|ติดต่อบ้าน|ติดต่อ(?!.*นิติ)|พบลูกบ้าน|เข้าพบ|มาพบ/;
@@ -4506,34 +5885,19 @@ const VISITOR_CHAT_HINT_RE = new RegExp([
   "บัตรประชาชน", "ใบขับขี่", "ขอภาพชัด", "อ่านไม่ออก", "ไม่มั่น",
   "มาหาใคร", "บ้านอะไร", "ติดต่อเรื่องอะไร",
 ].join("|"), "i");
-const THAI_PROVINCES = [
-  "กรุงเทพมหานคร", "กรุงเทพ", "กระบี่", "กาญจนบุรี", "กาฬสินธุ์",
-  "กำแพงเพชร", "ขอนแก่น", "จันทบุรี", "ฉะเชิงเทรา", "ชลบุรี",
-  "ชัยนาท", "ชัยภูมิ", "ชุมพร", "เชียงราย", "เชียงใหม่", "ตรัง",
-  "ตราด", "ตาก", "นครนายก", "นครปฐม", "นครพนม", "นครราชสีมา",
-  "นครศรีธรรมราช", "นครสวรรค์", "นนทบุรี", "นราธิวาส", "น่าน",
-  "บึงกาฬ", "บุรีรัมย์", "ปทุมธานี", "ประจวบคีรีขันธ์", "ปราจีนบุรี",
-  "ปัตตานี", "พระนครศรีอยุธยา", "พะเยา", "พังงา", "พัทลุง", "พิจิตร",
-  "พิษณุโลก", "เพชรบุรี", "เพชรบูรณ์", "แพร่", "ภูเก็ต", "มหาสารคาม",
-  "มุกดาหาร", "แม่ฮ่องสอน", "ยโสธร", "ยะลา", "ร้อยเอ็ด", "ระนอง",
-  "ระยอง", "ราชบุรี", "ลพบุรี", "ลำปาง", "ลำพูน", "เลย", "ศรีสะเกษ",
-  "สกลนคร", "สงขลา", "สตูล", "สมุทรปราการ", "สมุทรสงคราม",
-  "สมุทรสาคร", "สระแก้ว", "สระบุรี", "สิงห์บุรี", "สุโขทัย",
-  "สุพรรณบุรี", "สุราษฎร์ธานี", "สุรินทร์", "หนองคาย", "หนองบัวลำภู",
-  "อ่างทอง", "อำนาจเจริญ", "อุดรธานี", "อุตรดิตถ์", "อุทัยธานี",
-  "อุบลราชธานี",
-].sort((a, b) => b.length - a.length);
+const VISITOR_HOUSE_WITH_EXTRA_DIGITS_RE = /38\s*\/\s*\d{3,}/;
 
 // Human-readable Thai label per category (shown in the LINE reply).
 const VISITOR_CATEGORY_LABELS = {
-  food_delivery: "ส่งอาหาร",
-  delivery: "ส่งพัสดุ/ขนส่ง",
+  laundry: "ซักรีด/รับ–ส่งผ้า",
+  food_delivery: "ส่งอาหาร (Food Delivery)",
+  delivery: "ส่งพัสดุ/ขนส่ง (Delivery)",
   pickup: "รับ-ส่ง (Grab/แท็กซี่)",
-  contractor: "ช่าง/ซ่อมบำรุง",
+  contractor: "ช่าง/ซ่อมบำรุง (Contractor)",
   utility: "หน่วยงานสาธารณูปโภค",
   office: "ติดต่อนิติ/ส่วนกลาง",
   contact: "มาติดต่อ",
-  guest: "มาหาลูกบ้าน",
+  guest: "แขก/ผู้มาติดต่อ",
 };
 
 /**
@@ -4544,6 +5908,8 @@ const VISITOR_CATEGORY_LABELS = {
 function mapVisitorPurposeCategory(text) {
   const value = String(text || "").trim().toLowerCase();
   if (!value) return "unknown";
+  if (VISITOR_LAUNDRY_RE.test(value) &&
+      !/ช่าง|ซ่อม|ติดตั้ง/.test(value)) return "laundry";
   if (VISITOR_PICKUP_RE.test(value)) return "pickup";
   if (VISITOR_FOOD_RE.test(value)) return "food_delivery";
   if (VISITOR_DELIVERY_RE.test(value)) return "delivery";
@@ -4567,7 +5933,90 @@ function visitorPurposeLabel(category, rawText) {
     const detail = visitorContractorDetail(rawText);
     return detail ? `ช่าง/ซ่อมบำรุง (${detail})` : "ช่าง/ซ่อมบำรุง";
   }
+  if (category === "office") {
+    const value = String(rawText || "").trim();
+    return /^(?:ติดต่อนิติ(?:\/ส่วนกลาง)?|งาน(?:ปรับปรุง)?ส่วนกลาง)/
+        .test(value) ?
+      value : "ติดต่อนิติ/ส่วนกลาง";
+  }
   return VISITOR_CATEGORY_LABELS[category] || (rawText || "ไม่ระบุ");
+}
+
+/**
+ * Returns the purpose label used in aggregate LINE reports. Office/common-area
+ * details are intentionally hidden because they are operational notes rather
+ * than useful report categories.
+ * @param {string} category
+ * @param {string} rawText
+ * @return {string}
+ */
+function visitorReportPurposeLabel(category, rawText) {
+  if (category === "office") return "ติดต่อนิติ/ส่วนกลาง";
+  return visitorPurposeLabel(category, rawText);
+}
+
+/**
+ * Returns a compact purpose label for narrow LINE chat bubbles.
+ * @param {string} category
+ * @param {string} rawText
+ * @return {string}
+ */
+function visitorReplyPurposeLabel(category, rawText) {
+  if (category === "food_delivery") return "ส่งอาหาร";
+  if (category === "delivery") return "ส่งพัสดุ/ขนส่ง";
+  if (category === "contractor") {
+    const detail = visitorContractorDetail(rawText);
+    return detail ? `ช่าง/ซ่อมบำรุง (${detail})` : "ช่าง/ซ่อมบำรุง";
+  }
+  return visitorPurposeLabel(category, rawText);
+}
+
+/**
+ * Pulls the free-form detail from common-area / juristic office contacts.
+ * @param {string} rawText
+ * @return {string}
+ */
+function visitorCommonAreaDetail(rawText) {
+  const value = cleanVisitorPurposeText(rawText)
+      .replace(/38\s*\/\s*69/g, " ")
+      .replace(VISITOR_COMMON_AREA_RE, " ")
+      .replace(/ส่วน\s*กลาง/g, " ")
+      .replace(/มาติดต่อ|ติดต่อ/g, " ")
+      .replace(/[()（）]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 40);
+  if (/ปรับปรุง\s*สโมสร|สโมสร.*ปรับปรุง/.test(value)) {
+    return "ปรับปรุงสโมสร";
+  }
+  if (/ส่ง\s*(?:ปูน\s*ซีเมนต์|ปูน)|ปูน\s*ซีเมนต์/.test(value)) {
+    return "ส่งปูนซีเมนต์";
+  }
+  if (/ส่ง\s*วัสดุ|วัสดุ/.test(value)) {
+    return "ส่งวัสดุ";
+  }
+  if (/ไม้\s*กั้น|ระบบ\s*ไม้\s*กั้น/.test(value)) {
+    return "ซ่อมระบบไม้กั้น";
+  }
+  return value;
+}
+
+/**
+ * Chooses whether a 38/69 entry is a meeting with juristic office or work
+ * being performed in the common area.
+ * @param {string} rawText
+ * @param {string} detail
+ * @return {string}
+ */
+function visitorCommonAreaPurposeLabel(rawText, detail) {
+  const source = `${rawText || ""} ${detail || ""}`;
+  if (!VISITOR_COMMON_AREA_WORK_RE.test(source)) {
+    return detail ? `ติดต่อนิติ (${detail})` : "ติดต่อนิติ";
+  }
+  if (/ปรับปรุง|ก่อสร้าง/.test(source)) {
+    return detail ? `งานปรับปรุงส่วนกลาง (${detail})` : "งานปรับปรุงส่วนกลาง";
+  }
+  return detail ? `งานส่วนกลาง (${detail})` : "งานส่วนกลาง";
 }
 
 /**
@@ -4581,7 +6030,11 @@ function visitorContractorDetail(rawText) {
       .replace(/\s+/g, " ")
       .trim();
   if (!value) return "";
-  if (/ล้าง\s*แอร์|แอร์/.test(value)) return "ล้างแอร์";
+  if (/ติดตั้ง\s*แอร์|ลง\s*แอร์/.test(value)) return "ติดตั้งแอร์";
+  if (/ย้าย\s*แอร์|รื้อ\s*แอร์/.test(value)) return "ย้ายแอร์";
+  if (/ซ่อม\s*แอร์|เช็ค\s*แอร์|ตรวจ\s*แอร์/.test(value)) return "ซ่อมแอร์";
+  if (/ล้าง\s*แอร์/.test(value)) return "ล้างแอร์";
+  if (/แอร์/.test(value)) return "ช่างแอร์";
   if (/ช่าง\s*ไฟ|ไฟฟ้า|ซ่อมไฟ/.test(value)) return "ช่างไฟ";
   if (/ช่าง\s*ประปา|ประปา|ซ่อมน้ำ/.test(value)) return "ช่างประปา";
   if (/สวน|ตัดหญ้า|ต้นไม้/.test(value)) return "ช่างสวน";
@@ -4605,31 +6058,149 @@ function visitorReplyHouseNo(houseNo) {
 }
 
 /**
+ * Formats one or more houses for LINE replies.
+ * @param {string} houseNo
+ * @param {string[]} houseNos
+ * @return {string}
+ */
+function visitorReplyHouseList(houseNo, houseNos = []) {
+  const values = Array.isArray(houseNos) ? houseNos.filter(Boolean) : [];
+  const ordered = values.length ? values : [houseNo].filter(Boolean);
+  return ordered.map(visitorReplyHouseNo).join(", ");
+}
+
+/**
+ * Applies a village-office worldview for messages that clearly refer to
+ * common-area operations even when the guard did not type a house number.
+ * @param {string} houseNo
+ * @param {string} purposeText
+ * @param {string} rawText
+ * @return {boolean}
+ */
+function shouldInferCommonArea(houseNo, purposeText, rawText) {
+  if (houseNo) return false;
+  const value = `${purposeText || ""} ${rawText || ""}`.trim();
+  if (!value) return false;
+  if (VISITOR_COMMON_AREA_RE.test(value)) return true;
+  return VISITOR_COMMON_AREA_OPERATION_RE.test(value);
+}
+
+/**
+ * Extracts a short house suffix from guard speech when the house appears as a
+ * loose trailing number, e.g. "มีรถมาส่งอาหารครับ 15 ครับ".
+ * @param {string} raw
+ * @return {string}
+ */
+function extractVisitorTrailingHouseNo(raw) {
+  const value = String(raw || "").normalize("NFKC");
+  if (![
+    VISITOR_FOOD_RE,
+    VISITOR_DELIVERY_RE,
+    VISITOR_PICKUP_RE,
+    VISITOR_CONTRACTOR_RE,
+    VISITOR_GUEST_RE,
+  ].some((re) => re.test(value))) {
+    return "";
+  }
+  const match = value.match(
+      /(?:^|\s)([1-9]\d?)(?=\s*(?:ครับ|ค่ะ|คะ|ผม)?\s*$)/,
+  );
+  return match ? normalizePattraHouseNo(match[1]) : "";
+}
+
+/**
+ * Detects guard-entered operational exceptions that should be saved without
+ * repeatedly asking for the missing image.
+ * @param {string} raw
+ * @return {string}
+ */
+function extractVisitorIntakeException(raw) {
+  const value = String(raw || "").normalize("NFKC").toLowerCase();
+  const noDocumentRe = new RegExp([
+    "ไม่มี\\s*(?:บัตร|ใบขับขี่)",
+    "ไม่(?:ได้)?\\s*(?:ถ่าย|ส่ง)\\s*(?:บัตร|ใบขับขี่)",
+  ].join("|"));
+  const noVehicleRe = new RegExp([
+    "ไม่มี\\s*(?:ทะเบียน|รูปรถ|ป้ายทะเบียน)",
+    "ไม่(?:ได้)?\\s*(?:ถ่าย|ส่ง)\\s*(?:ทะเบียน|รูปรถ|ป้ายทะเบียน)",
+  ].join("|"));
+  if (/ไม่มี\s*สแกน\s*เข้า|ไม่\s*สแกน\s*เข้า|เป็น\s*ลูกบ้าน/.test(
+      value,
+  )) {
+    return "resident_no_scan";
+  }
+  const noDoc = noDocumentRe.test(value);
+  const noVehicle = noVehicleRe.test(value);
+  if (noDoc && noVehicle) return "missing_document_and_vehicle";
+  if (noDoc) return "missing_document";
+  if (noVehicle) return "missing_vehicle";
+  return "";
+}
+
+/**
+ * Normalizes guard text before parsing without losing the original raw text.
+ * @param {string} raw
+ * @return {string}
+ */
+function normalizeVisitorInputText(raw) {
+  return String(raw || "")
+      .normalize("NFKC")
+      .replace(/บ้าน\s+เลข\s+ที่/gi, "บ้านเลขที่")
+      .replace(/เลข\s+ที่/gi, "เลขที่")
+      .replace(/((?:บ้าน|เลขที่)\s*)(\d)\s+(\d)(?!\d)/gi, "$1$2$3")
+      .replace(/\b38\s+([1-9]\d?)(?!\d)/g, "38/$1")
+      .replace(/\b38([1-9]\d?)(?!\d)\b/g, "38/$1")
+      .replace(/([^\s])(?=38\s*\/\s*\d{1,2})/g, "$1 ")
+      .replace(/([A-Za-z0-9])(?=(?:บ้าน|เลขที่)\s*\d{1,2})/gi, "$1 ")
+      .replace(/(38\s*\/\s*\d{1,2})(?=[^\s\d])/g, "$1 ")
+      .replace(/((?:บ้าน|เลขที่)\s*\d{1,2})(?=[^\s\d])/gi, "$1 ")
+      .replace(/\s+/g, " ")
+      .trim();
+}
+
+/**
  * Parses flexible guard-entered visitor text.
  * @param {string} text
  * @return {Object}
  */
 function parseVisitorIntakeText(text) {
   const rawText = String(text || "").trim();
-  const vehiclePlate = extractVisitorPlateFromText(rawText);
-  const isCommonAreaContact = VISITOR_COMMON_AREA_RE.test(rawText);
-  const tokens = rawText
+  const normalizedText = normalizeVisitorInputText(rawText);
+  const explicitHouseNos = extractPattraHouseNos(normalizedText);
+  const warnings = [];
+  if (VISITOR_HOUSE_WITH_EXTRA_DIGITS_RE.test(rawText)) {
+    warnings.push("house_format_ambiguous");
+  }
+  if (normalizedText !== rawText) warnings.push("text_spacing_normalized");
+  const vehiclePlate = extractVisitorPlateFromText(normalizedText);
+  const intakeException = extractVisitorIntakeException(normalizedText);
+  const isCommonAreaContact = VISITOR_COMMON_AREA_RE.test(normalizedText);
+  const tokens = normalizedText
       .split(/[\n,，]+/)
       .map((line) => line.trim())
       .filter(Boolean);
   let houseNo = isCommonAreaContact ? "38/69" : "";
+  let houseNos = isCommonAreaContact ? ["38/69"] : [];
   const purposeParts = [];
 
   for (const token of tokens) {
-    const embedded = token.match(/38\s*\/\s*(\d{1,2})/);
-    const labeledShort = token.match(/(?:บ้าน|เลขที่)\s*(\d{1,2})/i);
+    const tokenHouseNos = extractPattraHouseNos(token);
+    const labeledShort = token.match(/(?:บ้าน|เลขที่)\s*(\d{1,2})(?!\d)/i);
     const standalone = token.match(/^\d{1,2}$/);
-    if (!houseNo && (embedded || labeledShort || standalone)) {
-      houseNo = normalizePattraHouseNo(
-          embedded ? embedded[0] : labeledShort ? labeledShort[1] : token,
+    const suffixWithPurpose = token.match(/^(\d{1,2})\s*(.+)$/);
+    if (houseNos.length > 1 && suffixWithPurpose &&
+        houseNos.includes(normalizePattraHouseNo(suffixWithPurpose[1]))) {
+      const leftover = stripPattraHouseNos(suffixWithPurpose[2]).trim();
+      if (leftover) purposeParts.push(leftover);
+      continue;
+    }
+    if (!houseNo && (tokenHouseNos.length || labeledShort || standalone)) {
+      houseNo = tokenHouseNos[0] || normalizePattraHouseNo(
+          labeledShort ? labeledShort[1] : token,
       );
-      const leftover = token.replace(/38\s*\/\s*\d{1,2}/, "")
-          .replace(/(?:บ้าน|เลขที่)\s*\d{1,2}/i, "")
+      houseNos = tokenHouseNos.length ?
+        tokenHouseNos : [houseNo].filter(Boolean);
+      const leftover = stripPattraHouseNos(token)
           .replace(/^\d{1,2}$/, "")
           .trim();
       if (leftover) purposeParts.push(leftover);
@@ -4638,28 +6209,79 @@ function parseVisitorIntakeText(text) {
     purposeParts.push(token);
   }
 
+  if (!houseNo && explicitHouseNos.length) {
+    houseNo = explicitHouseNos[0];
+    houseNos = explicitHouseNos;
+  } else if (explicitHouseNos.length > houseNos.length) {
+    houseNo = explicitHouseNos[0];
+    houseNos = explicitHouseNos;
+  }
+  if (!houseNo) {
+    const trailingHouseNo = extractVisitorTrailingHouseNo(normalizedText);
+    if (trailingHouseNo) {
+      houseNo = trailingHouseNo;
+      houseNos = [trailingHouseNo];
+    }
+  }
+
   let purposeText = cleanVisitorPurposeText(
       removeVisitorPlateText(purposeParts.join(" "), vehiclePlate),
   );
-  if (isCommonAreaContact) {
-    purposeText = "ติดต่อนิติ/ส่วนกลาง";
+  const parsedHouseNos = houseNos.length ? houseNos : explicitHouseNos;
+  parsedHouseNos.forEach((parsedHouseNo) => {
+    const suffix = String(parsedHouseNo || "").replace(/^38\//, "");
+    if (suffix) {
+      purposeText = purposeText.replace(
+          new RegExp(`^${suffix}\\s*(?=\\D|$)`),
+          "",
+      ).trim();
+    }
+  });
+  if (!purposeText && intakeException === "resident_no_scan") {
+    purposeText = "ลูกบ้าน/ไม่มีสแกนเข้า";
   }
-  const purposeCategory = mapVisitorPurposeCategory(purposeText);
+  const inferCommonArea = shouldInferCommonArea(
+      houseNo,
+      purposeText,
+      normalizedText,
+  );
+  if (!houseNo && inferCommonArea) {
+    houseNo = "38/69";
+    houseNos = ["38/69"];
+    warnings.push("common_area_inferred");
+  }
+  if (isCommonAreaContact) {
+    const commonAreaDetail = visitorCommonAreaDetail(purposeText || rawText);
+    purposeText = visitorCommonAreaPurposeLabel(
+        purposeText || rawText,
+        commonAreaDetail,
+    );
+  }
+  if (/ส่งรับบ้าน|รับรถลูกบ้าน|รถลูกบ้าน/.test(purposeText)) {
+    warnings.push("pickup_text_interpreted");
+  }
+  const purposeCategory = isCommonAreaContact ?
+    "office" : mapVisitorPurposeCategory(purposeText);
   const ignoredReason = getVisitorChatTextReason({
     rawText,
     houseNo,
+    houseNos: houseNos.length ? houseNos : [houseNo].filter(Boolean),
     purposeText,
     purposeCategory,
     vehiclePlate,
+    intakeException,
   });
   return {
     rawText,
     houseNo,
+    houseNos: houseNos.length ? houseNos : [houseNo].filter(Boolean),
     purposeText,
     purposeCategory,
     vehiclePlate,
+    intakeException,
     ignored: Boolean(ignoredReason),
     ignoredReason,
+    warnings: Array.from(new Set(warnings)),
     textConfidence: houseNo && purposeText ? 0.92 : 0.45,
   };
 }
@@ -4672,6 +6294,9 @@ function parseVisitorIntakeText(text) {
 function extractVisitorPlateFromText(raw) {
   const value = String(raw || "").normalize("NFKC")
       .replace(/38\s*\/\s*\d{1,2}/g, " ")
+      .replace(/\b38[1-9]\d?(?!\d)\b/g, " ")
+      .replace(/\b38\b/g, " ")
+      .replace(/(?:บ้าน|เลขที่)\s*\d{1,2}(?!\d)/gi, " ")
       .replace(/(?:เลข)?ทะเบียน|ป้ายทะเบียน|ทะเบียนรถ/gi, " ")
       .replace(/\s*(ครับ|ค่ะ|คะ|นะครับ|นะค่ะ|นะคะ)\s*$/g, "")
       .replace(/\s+/g, " ")
@@ -4710,15 +6335,17 @@ function removeVisitorPlateText(raw, plate) {
  */
 function cleanVisitorPurposeText(raw) {
   return String(raw || "")
+      .replace(/ลูก\s+บ้าน/gi, "ลูกบ้าน")
+      .replace(/มาติดต่อ\s*ลูกบ้าน/gi, "มาติดต่อ")
       .replace(/ส่ง\s*ลูกบ้านเลขที่/gi, "ส่งลูกบ้าน")
+      .replace(/มาส่ง\s*ลูกบ้านเลขที่/gi, "มาส่งลูกบ้าน")
       .replace(/ไปส่ง\s*ลูกบ้านเลขที่/gi, "ไปส่งลูกบ้าน")
       .replace(/รับ\s*ลูกบ้านเลขที่/gi, "รับลูกบ้าน")
       .replace(/มารับ\s*ลูกบ้านเลขที่/gi, "มารับลูกบ้าน")
+      .replace(/ส่งรับบ้าน/gi, "ส่งรับบ้าน")
       .replace(/(?:ลูก)?บ้านเลขที่/gi, "")
-      .replace(/(^|.)ลูกบ้าน\s*$/giu, (match, prefix, _offset, text) =>
-        /(รับ|ส่ง|ไปส่ง)ลูกบ้าน\s*$/u.test(text) ? match : prefix)
-      .replace(/(^|.)บ้าน\s*$/giu, (match, prefix) =>
-        prefix === "ก" ? match : prefix)
+      .replace(/^ลูกบ้าน\s*$/u, "")
+      .replace(/^บ้าน\s*$/u, "")
       .replace(/เลขที่/gi, "")
       .replace(/\b(house|home)\s*(no\.?|number)?\b/gi, "")
       .replace(/\s*(ครับ|ค่ะ|คะ|นะครับ|นะค่ะ|นะคะ)\s*$/g, "")
@@ -4737,102 +6364,12 @@ function getVisitorChatTextReason(parsed) {
   if (VISITOR_CHAT_ACK_RE.test(rawText)) return "acknowledgement";
   if (VISITOR_CHAT_HINT_RE.test(rawText)) return "instruction_chat";
   if (parsed.vehiclePlate) return "";
+  if (parsed.houseNo && parsed.intakeException) return "";
   if (!parsed.houseNo && (!parsed.purposeText ||
       ["unknown", "other"].includes(parsed.purposeCategory))) {
     return "no_house_or_visitor_purpose";
   }
   return "";
-}
-
-/**
- * Normalizes one manually editable visitor name.
- * @param {string} raw
- * @return {string}
- */
-function normalizeVisitorName(raw) {
-  return String(raw || "").normalize("NFKC")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 120);
-}
-
-/**
- * Normalizes a Thai plate candidate for display/storage.
- * @param {string} raw
- * @return {string}
- */
-function normalizeVisitorPlate(raw) {
-  let clean = String(raw || "")
-      .replace(/\s+/g, "")
-      .replace(/จังหวัด/g, "")
-      .replace(/กรุงเทพมหานคร/g, "กรุงเทพ")
-      .trim();
-  let province = "";
-  for (const candidate of THAI_PROVINCES) {
-    const normalized = normalizeThaiProvince(candidate);
-    if (clean.includes(candidate)) {
-      province = normalized;
-      clean = clean.replace(candidate, "");
-      break;
-    }
-    if (clean.includes(normalized)) {
-      province = normalized;
-      clean = clean.replace(normalized, "");
-      break;
-    }
-  }
-  const match = clean.match(/^([0-9]?[ก-ฮ]{1,3})([0-9]{1,4})$/);
-  if (!match) return [clean, province].filter(Boolean).join(" ").slice(0, 40);
-  return [match[1], match[2], province].filter(Boolean).join(" ");
-}
-
-/**
- * Normalizes Thai province names for visitor plate storage/display.
- * @param {string} raw
- * @return {string}
- */
-function normalizeThaiProvince(raw) {
-  const value = String(raw || "").trim();
-  return value === "กรุงเทพมหานคร" ? "กรุงเทพ" : value;
-}
-
-/**
- * Normalizes vehicle type into committee-facing Thai buckets.
- * @param {string} raw
- * @return {string}
- */
-function normalizeVisitorVehicleType(raw) {
-  const value = String(raw || "").trim().toLowerCase();
-  if (!value || value === "unknown") return "";
-  if (/ขยะ|garbage|trash|waste|refuse/.test(value)) return "รถขยะ";
-  if (/motor|มอเตอร์|มอเตอ|จักรยานยนต์|scooter|bike/.test(value)) {
-    return "รถมอเตอร์ไซค์";
-  }
-  if (/truck|บรรทุก|lorry|สิบล้อ|หกล้อ/.test(value)) return "รถบรรทุก";
-  if (/car|sedan|suv|van|pickup|รถยนต์|รถเก๋ง|รถตู้|กระบะ/.test(value)) {
-    return "รถยนต์";
-  }
-  return value.slice(0, 30);
-}
-
-/**
- * Masks a sensitive document number.
- * @param {string} raw
- * @return {string}
- */
-function maskDocumentNumber(raw) {
-  const digits = String(raw || "").replace(/\D/g, "");
-  if (digits.length < 4) return "";
-  return `${"*".repeat(Math.max(4, digits.length - 4))}${digits.slice(-4)}`;
-}
-
-/**
- * Normalizes Thai ID / driver license OCR into digits-only storage.
- * @param {string} raw
- * @return {string}
- */
-function normalizeDocumentNumber(raw) {
-  return String(raw || "").replace(/\D/g, "").slice(0, 20);
 }
 
 /**
@@ -4861,13 +6398,27 @@ async function analyzeVisitorIntakeImage(imagePath) {
         role: "user",
         parts: [
           {text: "Analyze this visitor registration image from a Thai " +
-            "security gate. Classify it as document, vehicle, or other. " +
+            "security gate. Classify it as document, vehicle, " +
+            "document_vehicle, or other. Use document_vehicle when one " +
+            "image visibly contains both an identity document and a vehicle " +
+            "license plate. " +
             "For Thai ID card or driver license, extract the person's Thai " +
             "name if visible, the English/Latin name if visible, document " +
-            "type, and the visible ID/license number as digits only in " +
-            "documentNumber. Prefer Thai names over English names for the " +
+            "type, and the person's number as digits only in " +
+            "documentNumber. A Thai driver license prints BOTH a 13-digit " +
+            "national ID (เลขประจำตัวประชาชน) and a shorter license number " +
+            "(เลขที่ใบอนุญาต) — always put the 13-digit national ID in " +
+            "documentNumber, and only fall back to the license number when " +
+            "no 13-digit national ID is visible. Prefer Thai names over " +
+            "English names for the " +
             "main personName field. For vehicle images, extract the " +
-            "visible Thai license plate with province if visible. Classify " +
+            "visible Thai license plate with province if visible. Read the " +
+            "plate character by character directly from the image, then " +
+            "verify every Thai letter a second time before returning it. " +
+            "Pay special attention to similar-looking Thai letters such as " +
+            "ร/ธ, ก/ภ, ข/ช, and พ/ฟ. Do not infer a letter from a common " +
+            "plate pattern; leave vehiclePlate empty when any plate letter " +
+            "cannot be read confidently. Classify " +
             "vehicle type as car, motorcycle, truck, or garbage_truck. Use " +
             "visible " +
             "evidence only. If uncertain, lower confidence and leave fields " +
@@ -4909,12 +6460,14 @@ async function analyzeVisitorIntakeImage(imagePath) {
         },
       },
     }),
-    signal: AbortSignal.timeout(45000),
+    signal: AbortSignal.timeout(60000),
   });
   const result = await response.json();
   if (!response.ok) {
-    throw new Error(String(result.error && result.error.message ||
+    const error = new Error(String(result.error && result.error.message ||
       `Vertex request failed (${response.status})`).slice(0, 500));
+    error.status = response.status;
+    throw error;
   }
   const parts = result.candidates && result.candidates[0] &&
     result.candidates[0].content && result.candidates[0].content.parts || [];
@@ -4930,7 +6483,8 @@ async function analyzeVisitorIntakeImage(imagePath) {
   ).trim().slice(0, 120);
   const documentNumber = normalizeDocumentNumber(parsed.documentNumber);
   return {
-    imageKind: ["document", "vehicle", "other"].includes(parsed.imageKind) ?
+    imageKind: ["document", "vehicle", "document_vehicle", "other"]
+        .includes(parsed.imageKind) ?
       parsed.imageKind : "other",
     documentType: String(parsed.documentType || "unknown").trim()
         .slice(0, 40),
@@ -4956,22 +6510,45 @@ async function analyzeVisitorIntakeImage(imagePath) {
  */
 async function replyLineText(replyToken, text) {
   if (!replyToken || !text) return;
-  const response = await fetch("https://api.line.me/v2/bot/message/reply", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${LINE_CHANNEL_ACCESS_TOKEN.value()}`,
-    },
-    body: JSON.stringify({
-      replyToken,
-      messages: [{type: "text", text: String(text).slice(0, 2000)}],
-    }),
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`LINE reply failed (${response.status}): ${body}`);
+  try {
+    const response = await fetch("https://api.line.me/v2/bot/message/reply", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${LINE_CHANNEL_ACCESS_TOKEN.value()}`,
+      },
+      body: JSON.stringify({
+        replyToken,
+        messages: [{type: "text", text: String(text).slice(0, 2000)}],
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      const error = new Error(
+          `LINE reply failed (${response.status}): ${body}`,
+      );
+      error.code = "LINE_REPLY_FAILED";
+      error.status = response.status;
+      throw error;
+    }
+  } catch (error) {
+    if (isLineReplyFailure(error)) throw error;
+    const wrapped = new Error(
+        `LINE reply unavailable: ${String(error.message || error)}`,
+    );
+    wrapped.code = "LINE_REPLY_FAILED";
+    throw wrapped;
   }
+}
+
+/**
+ * Identifies delivery failures that happen after Visitor data was saved.
+ * @param {*} error
+ * @return {boolean}
+ */
+function isLineReplyFailure(error) {
+  return Boolean(error && error.code === "LINE_REPLY_FAILED");
 }
 
 /**
@@ -4997,16 +6574,25 @@ function visitorSessionKey(source) {
  * @return {Promise<string>} The active log id
  */
 function resolveVisitorIntakeLogId(source, now, parsed = null, options = {}) {
-  const sessionRef = db.collection(VISITOR_INTAKE_SESSIONS_COLLECTION)
+  const store = options.store || db;
+  const sessionRef = store.collection(VISITOR_INTAKE_SESSIONS_COLLECTION)
       .doc(visitorSessionKey(source));
-  return db.runTransaction(async (tx) => {
+  const eventRef = options.eventId ?
+    store.collection(LINE_WEBHOOK_EVENTS_COLLECTION)
+        .doc(options.eventId) : null;
+  return store.runTransaction(async (tx) => {
+    const eventSnap = eventRef ? await tx.get(eventRef) : null;
+    const boundLogId = eventSnap && eventSnap.exists &&
+      (eventSnap.data() || {}).visitorLogId;
+    if (boundLogId) return boundLogId;
     const sessionSnap = await tx.get(sessionRef);
     const old = sessionSnap.exists ? sessionSnap.data() || {} : {};
     const active = old.logId && old.lastEventAtMs &&
       now - Number(old.lastEventAtMs) <= VISITOR_INTAKE_SESSION_WINDOW_MS;
     let shouldStartNew = !active;
     if (active && ((parsed && parsed.houseNo) || options.isImage)) {
-      const oldLogRef = db.collection(VISITOR_INTAKE_COLLECTION).doc(old.logId);
+      const oldLogRef = store.collection(VISITOR_INTAKE_COLLECTION)
+          .doc(old.logId);
       const oldLogSnap = await tx.get(oldLogRef);
       const oldLog = oldLogSnap.exists ? oldLogSnap.data() || {} : {};
       shouldStartNew = options.isImage ?
@@ -5014,7 +6600,10 @@ function resolveVisitorIntakeLogId(source, now, parsed = null, options = {}) {
         shouldStartNewVisitorLog(oldLog, parsed);
     }
     const logId = shouldStartNew ?
-      db.collection(VISITOR_INTAKE_COLLECTION).doc().id : old.logId;
+      store.collection(VISITOR_INTAKE_COLLECTION).doc().id : old.logId;
+    if (eventSnap && eventSnap.exists) {
+      tx.set(eventRef, {visitorLogId: logId}, {merge: true});
+    }
     tx.set(sessionRef, {
       logId,
       targetId: getTargetIdFromSource(source) || null,
@@ -5027,98 +6616,149 @@ function resolveVisitorIntakeLogId(source, now, parsed = null, options = {}) {
 }
 
 /**
- * Decides if a new image should start a fresh visitor log. This prevents the
- * next visitor's image batch from being appended to an already-complete log
- * when guards send photos before the next text line.
- * @param {Object} currentLog
- * @return {boolean}
- */
-function shouldStartNewVisitorImageLog(currentLog) {
-  if (!currentLog) return false;
-  if (currentLog.status === "complete") return true;
-  const images = Array.isArray(currentLog.images) ? currentLog.images : [];
-  return Boolean(
-      currentLog.houseNo &&
-      currentLog.purposeText &&
-      images.length >= 2,
-  );
-}
-
-/**
- * Decides if a text message should start a fresh visitor log.
- * @param {Object} currentLog
- * @param {Object} parsed
- * @return {boolean}
- */
-function shouldStartNewVisitorLog(currentLog, parsed) {
-  if (!currentLog || !parsed || !parsed.houseNo) return false;
-  if (currentLog.houseNo && parsed.houseNo !== currentLog.houseNo) return true;
-  if (currentLog.status !== "complete") return false;
-  if (!parsed || !parsed.houseNo) return false;
-  return parsed.houseNo !== currentLog.houseNo ||
-    Boolean(parsed.purposeText && currentLog.purposeText);
-}
-
-/**
  * Builds the current visitor intake reply text.
  * @param {Object} data
  * @return {string}
  */
 function buildVisitorIntakeReply(data) {
   const images = Array.isArray(data.images) ? data.images : [];
-  const docCount = images.filter((img) => img.kind === "document").length;
-  const vehicleCount = images.filter((img) => img.kind === "vehicle").length;
+  if (data.status !== "complete" && images.some((image) => !image.analysis &&
+      (image.analysisPending || image.analysisFailed))) {
+    return data.ocrRetryAt || images.some((image) => image.analysisPending) ?
+      "✅ บันทึกรูปผู้มาติดต่อแล้ว ระบบกำลังอ่านข้อมูลจากรูป" :
+      "⚠️ บันทึกรูปผู้มาติดต่อแล้ว แต่ระบบอ่านข้อมูลไม่สำเร็จ " +
+        "กรุณาตรวจสอบรายการ";
+  }
+  const docCount = images.filter((img) =>
+    ["document", "document_vehicle"].includes(img.kind)).length;
+  const vehicleCount = images.filter((img) =>
+    ["vehicle", "document_vehicle"].includes(img.kind)).length;
   const unknownImageCount = images.filter((img) => img.kind === "other").length;
   const houseNo = data.houseNo || "";
+  const houseNos = Array.isArray(data.houseNos) ? data.houseNos : [];
   const purposeText = data.purposeText || "";
   const plate = formatVisitorReplyPlate(
       data.vehicleCapture && data.vehicleCapture.plateText,
   );
   const personName = visitorReplyPersonName(data.ocr || {});
-  const missing = [];
-  if (!houseNo) missing.push("บ้านเลขที่");
-  if (!purposeText) missing.push("เหตุผลที่มา");
-  if (!docCount) {
-    missing.push(images.length ?
+  const exceptionLabel = visitorIntakeExceptionLabel(data.intakeException);
+  const skipDocument = ["missing_document", "missing_document_and_vehicle",
+    "resident_no_scan"].includes(String(data.intakeException || ""));
+  const skipVehicle = ["missing_vehicle", "missing_document_and_vehicle",
+    "resident_no_scan"].includes(String(data.intakeException || ""));
+  const blockingMissing = [];
+  const optionalMissing = [];
+  if (!houseNo) blockingMissing.push("บ้านเลขที่");
+  if (!purposeText) blockingMissing.push("เหตุผลที่มา");
+  if (!docCount && !skipDocument) {
+    const item = images.length ?
       "รูปบัตร/ใบขับขี่อ่านไม่ชัด กรุณาส่งใหม่" :
-      "รูปบัตร/ใบขับขี่");
+      "รูปบัตร/ใบขับขี่";
+    if (plate) optionalMissing.push(item);
+    else blockingMissing.push(item);
   }
-  if (!vehicleCount && !plate) {
-    missing.push(unknownImageCount ?
+  if (!vehicleCount && !plate && !skipVehicle) {
+    const item = unknownImageCount ?
       "อ่านทะเบียนได้ไม่ชัดครับ รบกวน รปภ ส่งรูปป้ายทะเบียนใหม่ " +
         "หรือพิมพ์ทะเบียนให้หน่อยครับ" :
-      "รูปรถ/ทะเบียน");
-  } else if (!plate) {
-    missing.push("อ่านทะเบียนได้ไม่ชัดครับ รบกวน รปภ พิมพ์ทะเบียนให้หน่อยครับ");
+      "รูปรถ/ทะเบียน";
+    if (docCount || personName) optionalMissing.push(item);
+    else blockingMissing.push(item);
+  } else if (!plate && !skipVehicle) {
+    const item = "อ่านทะเบียนได้ไม่ชัดครับ รบกวน รปภ พิมพ์ทะเบียนให้หน่อยครับ";
+    if (docCount || personName) optionalMissing.push(item);
+    else blockingMissing.push(item);
   }
 
   const divider = "━━━━━━━━━━━━━";
 
-  if (missing.length) {
-    const missingLines = missing.map((item) => `   ◻️ ${item}`).join("\n");
+  if (blockingMissing.length) {
+    const missingLines = blockingMissing.map((item) => `- ${item}`)
+        .join("\n");
     return [
-      "🙏 รับข้อมูลแล้วครับ",
-      "",
-      "📋 ขอเพิ่มอีกนิดนะครับ",
+      "ยังบันทึก Visitor ไม่ครบครับ",
       divider,
+      "รบกวนส่งข้อมูลที่ขาดเพิ่ม:",
       missingLines,
       divider,
-      "✍️ ตัวอย่างการพิมพ์",
-      "      38/13",
-      "      ช่างมาทาสี",
+      "ถ้าส่งรูปไม่ได้ ให้พิมพ์บอกได้เลย",
+      "ตัวอย่าง: ไม่มีบัตร มีแต่ทะเบียน",
+      "ตัวอย่าง: ไม่มีทะเบียน มีแต่บัตร",
     ].join("\n");
   }
 
-  const purposeLabel = visitorPurposeLabel(data.purposeCategory, purposeText);
+  const purposeLabel = visitorReplyPurposeLabel(
+      data.purposeCategory,
+      purposeText,
+  );
   const lines = [
     "✅ บันทึกเรียบร้อย",
     divider,
-    `🏠 ติดต่อบ้าน : ${visitorReplyHouseNo(houseNo)}`,
+    `🏠 ติดต่อบ้าน : ${visitorReplyHouseList(houseNo, houseNos)}`,
   ];
   if (personName) lines.push(`👤 ชื่อ: ${personName}`);
   lines.push(`📝 เหตุผล : ${purposeLabel}`);
   if (plate) lines.push(`🚗 ทะเบียน : ${plate}`);
+  if (exceptionLabel) lines.push(`ℹ️ หมายเหตุ : ${exceptionLabel}`);
+  if (optionalMissing.length) {
+    lines.push(`ℹ️ ข้อมูลขาดบางส่วน : ${optionalMissing.join(", ")}`);
+  }
   return lines.join("\n");
+}
+
+/**
+ * Formats a guard-entered exception code for LINE replies.
+ * @param {string} code
+ * @return {string}
+ */
+function visitorIntakeExceptionLabel(code) {
+  switch (String(code || "")) {
+    case "resident_no_scan":
+      return "ลูกบ้าน/ไม่มีสแกนเข้า";
+    case "missing_document":
+      return "ไม่มีบัตร/ใบขับขี่";
+    case "missing_vehicle":
+      return "ไม่มีรูปรถ/ทะเบียน";
+    case "missing_document_and_vehicle":
+      return "ไม่มีบัตรและไม่มีรูปรถ/ทะเบียน";
+    default:
+      return "";
+  }
+}
+
+/**
+ * Determines whether the webhook should reply immediately on this event.
+ * Complete records always reply at once. Incomplete records can reply after
+ * the guard follows images with text, but only after every image has finished
+ * analysis so no in-progress notice interrupts the chat.
+ * @param {Object} current
+ * @param {Object} merged
+ * @param {Object|null} parsed
+ * @param {string} reply
+ * @return {boolean}
+ */
+function shouldReplyVisitorIntakeNow(current, merged, parsed, reply) {
+  if (merged.status === "complete" && current.status !== "complete") {
+    return true;
+  }
+  const hasPendingImage = Array.isArray(merged.images) &&
+    merged.images.some((image) => image.kind === "pending" ||
+      image.analysisPending === true);
+  if (hasPendingImage) return false;
+  if (parsed && merged.status === "partial" &&
+      !["complete", "partial"].includes(String(current.status || ""))) {
+    return true;
+  }
+  if (!parsed) return false;
+  const imageCount = Array.isArray(merged.images) ? merged.images.length : 0;
+  if (!imageCount || merged.status === "complete") return false;
+  const nextReply = String(reply || "").trim();
+  const prevReply = String(current.lastReplyText || "").trim();
+  if (nextReply !== prevReply) return true;
+  const lastReplyAtMs = current.lastReplyAt && current.lastReplyAt.toMillis ?
+    current.lastReplyAt.toMillis() : 0;
+  return !lastReplyAtMs ||
+    (Date.now() - lastReplyAtMs) >= 30 * 1000;
 }
 
 /**
@@ -5156,19 +6796,83 @@ function formatVisitorReplyPlate(raw) {
 }
 
 /**
- * Recomputes visitor intake status from aggregate data.
+ * Checks whether a visitor plate looks like a normal Thai plate string.
+ * @param {string} raw
+ * @return {boolean}
+ */
+function isLikelyThaiVisitorPlate(raw) {
+  const value = stripThaiProvinceForLookup(normalizeVisitorPlate(raw));
+  if (!value) return false;
+  return /^[0-9]?[ก-ฮ]{1,3}[0-9]{1,4}$/u.test(value);
+}
+
+/**
+ * Builds warning codes for records that look incomplete or low-confidence.
  * @param {Object} data
+ * @return {string[]}
+ */
+function getVisitorWarningCodes(data) {
+  const warnings = new Set();
+  if ((data.images || []).some((image) => image.analysisFailed)) {
+    warnings.add(data.ocrRetryAt ? "ocr_retry_pending" : "ocr_failed");
+  }
+  const parsedWarnings = data && data.textParse &&
+    Array.isArray(data.textParse.warnings) ? data.textParse.warnings : [];
+  parsedWarnings.forEach((item) => warnings.add(item));
+  if (!["complete", "partial"].includes(String(data.status || ""))) {
+    warnings.add("incomplete");
+  }
+  if (["other", "unknown"].includes(String(data.purposeCategory || "")) &&
+      String(data.purposeText || "").trim()) {
+    warnings.add("category_fallback");
+  }
+  const ocr = data.ocr || {};
+  const hasName = [
+    ocr.personName,
+    ocr.thaiPersonName,
+    ocr.englishPersonName,
+  ].some((value) => String(value || "").trim());
+  if (hasName && !String(ocr.documentNumber || "").trim()) {
+    warnings.add("missing_document_number");
+  }
+  if (Number(ocr.confidence) > 0 && Number(ocr.confidence) < 0.9) {
+    warnings.add("low_document_confidence");
+  }
+  const plateText = data.vehicleCapture && data.vehicleCapture.plateText || "";
+  if (plateText && !isLikelyThaiVisitorPlate(plateText)) {
+    warnings.add("suspicious_plate_text");
+  }
+  return Array.from(warnings);
+}
+
+/**
+ * Converts one warning code into a short Thai operator label.
+ * @param {string} code
  * @return {string}
  */
-function getVisitorIntakeStatus(data) {
-  const images = Array.isArray(data.images) ? data.images : [];
-  const hasDocument = images.some((img) => img.kind === "document");
-  const hasPlate = Boolean(
-      data.vehicleCapture && data.vehicleCapture.plateText,
-  );
-  if (!data.houseNo || !data.purposeText) return "pending_text";
-  if (!hasDocument || !hasPlate) return "pending_image";
-  return "complete";
+function visitorWarningLabel(code) {
+  return {
+    incomplete: "ข้อมูลยังไม่ครบ",
+    ocr_retry_pending: "ระบบจะลองอ่านรูปใหม่อัตโนมัติ",
+    ocr_failed: "ระบบอ่านรูปไม่สำเร็จ กรุณาตรวจสอบ",
+    category_fallback: "หมวดอัตโนมัติยังไม่ชัด",
+    missing_document_number: "อ่านเลขบัตร/ใบขับขี่ไม่ครบ",
+    low_document_confidence: "OCR บัตร/ใบขับขี่มั่นใจไม่สูง",
+    suspicious_plate_text: "ทะเบียนที่อ่านได้ดูผิดปกติ",
+    house_format_ambiguous: "เลขบ้านในข้อความกำกวม",
+    text_spacing_normalized: "ข้อความพิมพ์ติดกัน ระบบช่วยแยกคำให้",
+    pickup_text_interpreted: "ความหมายรับ-ส่งตีความจากข้อความ",
+    common_area_inferred: "ระบบตีความว่าเป็นงานส่วนกลาง",
+  }[code] || "ต้องตรวจสอบข้อมูล";
+}
+
+/**
+ * Returns user-facing warning labels for a visitor record.
+ * @param {Object} data
+ * @return {string[]}
+ */
+function buildVisitorWarnings(data) {
+  return getVisitorWarningCodes(data).map(visitorWarningLabel);
 }
 
 /**
@@ -5203,7 +6907,7 @@ async function buildVisitorDailyReport(reportDate) {
     const category = record.purposeCategory || "unknown";
     categories[category] = (categories[category] || 0) + 1;
     if (record.houseNo) houses.add(record.houseNo);
-    if (record.status === "complete") complete += 1;
+    if (["complete", "partial"].includes(record.status)) complete += 1;
     else if (record.status === "pending_image") missingImage += 1;
     const plate = record.vehicleCapture ?
       normalizeVisitorPlate(record.vehicleCapture.plateText) : "";
@@ -5431,7 +7135,8 @@ async function handleVisitorIntakeEvent(event) {
       source,
       now,
       parsed,
-      {isImage: message.type === "image"},
+      {isImage: message.type === "image",
+        eventId: getLineWebhookEventId(event)},
   );
   const logRef = db.collection(VISITOR_INTAKE_COLLECTION).doc(logId);
 
@@ -5441,20 +7146,80 @@ async function handleVisitorIntakeEvent(event) {
   let imageOcr = null;
   let imageVehicle = null;
   if (message.type === "image") {
-    const image = await saveVisitorIntakeImage(event, logId);
-    let analysis = null;
-    try {
-      analysis = await analyzeVisitorIntakeImage(image.storagePath);
-    } catch (error) {
-      logger.warn("Visitor intake image analysis failed", {
-        logId,
-        error: error.message,
-      });
-    }
-    const kind = analysis && analysis.confidence >= 0.55 ?
-      analysis.imageKind : "other";
-    storedImage = {...image, kind, analysis: analysis || null};
-    if (analysis && kind === "document") {
+    const existingSnap = await logRef.get();
+    const existing = existingSnap.exists ? existingSnap.data() || {} : {};
+    const saved = (existing.images || []).find((i) =>
+      i.messageId === message.id && i.storagePath && !i.purgedAt);
+    if (saved && (saved.analysis || saved.analysisAttempts >= 9 ||
+        saved.analysisRetryable === false)) return true;
+    const image = saved || await saveVisitorIntakeImage(event, logId);
+    const priorAttempts = Number(image.analysisAttempts || 0);
+    storedImage = {
+      ...image,
+      kind: "pending",
+      analysisPending: true,
+      analysisAttempts: Math.min(9, priorAttempts + 3),
+      analysis: null,
+    };
+    const reserved = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(logRef);
+      const cur = snap.exists ? snap.data() || {} : {};
+      if (cur.ocrRecoveryLease &&
+          visitorTimestampMs(cur.ocrRetryAt) > Date.now()) {
+        throw new Error("Visitor OCR recovery in progress; retry later");
+      }
+      const images = Array.isArray(cur.images) ? [...cur.images] : [];
+      const index = storedImage.messageId ? images.findIndex(
+          (im) => im.messageId === storedImage.messageId) : -1;
+      if (index >= 0 && images[index].analysis) return false;
+      if (index >= 0 &&
+          Number(images[index].analysisAttempts || 0) !== priorAttempts) {
+        throw new Error("Visitor image changed; retry with current state");
+      }
+      if (index >= 0) images[index] = {...images[index], ...storedImage};
+      else images.push(storedImage);
+      const update = {
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastLineMessageId: message.id || null,
+        images,
+        ocrRetryAt: admin.firestore.Timestamp.fromMillis(Date.now() +
+          5 * 60 * 1000),
+      };
+      if (!snap.exists) {
+        update.createdAt = admin.firestore.FieldValue.serverTimestamp();
+        update.visitDate = getTodayBangkokDate();
+        update.lineGroupId = source.groupId || null;
+        update.lineRoomId = source.roomId || null;
+        update.lineUserId = source.userId || null;
+        update.sourceType = source.type || null;
+        update.lprLinked = false;
+        update.imagesPurged = false;
+        update.imageRetentionDays = VISITOR_INTAKE_IMAGE_RETENTION_DAYS;
+        update.metadataRetentionDays = VISITOR_INTAKE_METADATA_RETENTION_DAYS;
+        update.metadataExpiresAt = admin.firestore.Timestamp.fromDate(
+            daysFromNow(VISITOR_INTAKE_METADATA_RETENTION_DAYS),
+        );
+      }
+      tx.set(logRef, update, {merge: true});
+      return true;
+    });
+    if (!reserved) return true;
+    const outcome = await analyzeVisitorImageWithRetry(
+        () => analyzeVisitorIntakeImage(image.storagePath),
+        (error, attempt) => logger.warn(
+            "Visitor intake image analysis failed",
+            {logId, attempt, error: error.message},
+        ),
+        Math.min(3, 9 - priorAttempts),
+    );
+    const analysis = outcome.analysis;
+    storedImage = {
+      ...image,
+      ...visitorImageAnalysisPatch(outcome),
+      analysisAttempts: priorAttempts + outcome.attempts,
+    };
+    const kind = storedImage.kind;
+    if (analysis && ["document", "document_vehicle"].includes(kind)) {
       imageOcr = {
         personName: analysis.personName || "",
         thaiPersonName: analysis.thaiPersonName || "",
@@ -5465,7 +7230,7 @@ async function handleVisitorIntakeEvent(event) {
         confidence: analysis.confidence,
       };
     }
-    if (analysis && kind === "vehicle") {
+    if (analysis && ["vehicle", "document_vehicle"].includes(kind)) {
       imageVehicle = {
         plateText: analysis.vehiclePlate || "",
         vehicleType: analysis.vehicleType || "unknown",
@@ -5482,6 +7247,9 @@ async function handleVisitorIntakeEvent(event) {
   const replyText = await db.runTransaction(async (tx) => {
     const snap = await tx.get(logRef);
     const cur = snap.exists ? snap.data() || {} : {};
+    if (parsed && (cur.rawTexts || []).some((text) =>
+      text.messageId === message.id)) return null;
+    if (storedImage && (!snap.exists || cur.imagesPurged)) return null;
     const update = {
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       lastLineMessageId: message.id || null,
@@ -5504,13 +7272,18 @@ async function handleVisitorIntakeEvent(event) {
 
     if (parsed) {
       const texts = Array.isArray(cur.rawTexts) ? [...cur.rawTexts] : [];
-      texts.push({
-        messageId: message.id || null,
-        text: parsed.rawText,
-        createdAt: admin.firestore.Timestamp.fromDate(new Date()),
-      });
+      if (!texts.some((text) => text.messageId === message.id)) {
+        texts.push({
+          messageId: message.id || null,
+          text: parsed.rawText,
+          createdAt: admin.firestore.Timestamp.fromDate(new Date()),
+        });
+      }
       update.rawTexts = texts;
       if (parsed.houseNo) update.houseNo = parsed.houseNo;
+      if (parsed.houseNos && parsed.houseNos.length) {
+        update.houseNos = parsed.houseNos;
+      }
       if (parsed.purposeText) update.purposeText = parsed.purposeText;
       if (parsed.purposeText) update.purposeCategory = parsed.purposeCategory;
       if (parsed.vehiclePlate) {
@@ -5523,30 +7296,46 @@ async function handleVisitorIntakeEvent(event) {
           source: "typed_text",
         };
       }
+      if (parsed.intakeException) {
+        update.intakeException = parsed.intakeException;
+      }
       update.textParse = parsed;
     }
 
     if (storedImage) {
       const images = Array.isArray(cur.images) ? [...cur.images] : [];
-      const dup = storedImage.messageId && images.some(
-          (im) => im.messageId === storedImage.messageId);
-      if (!dup) images.push(storedImage);
+      const index = storedImage.messageId ? images.findIndex(
+          (im) => im.messageId === storedImage.messageId) : -1;
+      if (index < 0 || images[index].purgedAt || images[index].analysis ||
+          images[index].storagePath !== storedImage.storagePath) return null;
+      images[index] = {...images[index], ...storedImage};
       update.images = images;
-      if (imageOcr) update.ocr = imageOcr;
-      if (imageVehicle) update.vehicleCapture = imageVehicle;
+      if (imageOcr) update.ocr = mergeVisitorEvidence(cur.ocr, imageOcr);
+      if (imageVehicle) {
+        update.vehicleCapture = mergeVisitorEvidence(
+            cur.vehicleCapture, imageVehicle);
+      }
+      const retryAt = nextVisitorOcrRetryAt(images, Date.now());
+      update.ocrRetryAt = retryAt ?
+        admin.firestore.Timestamp.fromMillis(retryAt) :
+        admin.firestore.FieldValue.delete();
     }
 
     const merged = {...cur, ...update};
+    if (storedImage && !nextVisitorOcrRetryAt(merged.images, Date.now())) {
+      delete merged.ocrRetryAt;
+    }
     merged.status = getVisitorIntakeStatus(merged);
     update.status = merged.status;
     const reply = buildVisitorIntakeReply(merged);
-    // Reply right away ONLY when the visit is complete. While still
-    // collecting, stay quiet so we don't nag the guard mid-upload (they are
-    // usually about to type the house/reason). If the guard then pauses with
-    // data still missing, visitorIntakeReminder pushes one reminder.
-    const replyNow = merged.status === "complete" &&
-      cur.status !== "complete";
-    if (replyNow) update.lastReplyText = reply;
+    // Reply right away when the visit becomes complete. For incomplete
+    // records, wait until all images finish analysis before asking for any
+    // missing information so an in-progress notice does not interrupt chat.
+    const replyNow = shouldReplyVisitorIntakeNow(cur, merged, parsed, reply);
+    if (replyNow) {
+      update.lastReplyText = reply;
+      update.lastReplyAt = admin.firestore.FieldValue.serverTimestamp();
+    }
     tx.set(logRef, update, {merge: true});
     return replyNow ? reply : null;
   });
@@ -5558,9 +7347,182 @@ async function handleVisitorIntakeEvent(event) {
   return true;
 }
 
+/**
+ * Processes one verified LINE event after the webhook has acknowledged it.
+ * @param {Object} event
+ * @return {Promise<void>}
+ */
+async function processLineWebhookEvent(event) {
+  const source = event.source || {};
+  await upsertLineTarget(source, event.type);
+
+  const data = {
+    sourceType: source.type || null,
+    groupId: source.groupId || null,
+    roomId: source.roomId || null,
+    userId: source.userId || null,
+    lastEventType: event.type || null,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  const messageText = event.type === "message" &&
+    event.message && event.message.type === "text" ?
+    String(event.message.text || "").trim() : "";
+  if (source.type === "group" && source.groupId &&
+      isSecurityShiftReportWindow(event.timestamp)) {
+    const shift = parseSecurityShiftKind(messageText) ||
+      getSecurityShiftFromTimestamp(event.timestamp);
+    const officerName = parseSecurityShiftName(messageText);
+    if (shift && officerName &&
+        /รายงานตัว|ปฏิบัติหน้าที่|เรียนมาเพื่อทราบ|รับทราบ|รปภ/i
+            .test(messageText)) {
+      await upsertSecurityShiftReport(shift, officerName, source);
+      logger.info("Stored security shift officer", {
+        groupId: source.groupId,
+        shift,
+        officerName,
+      });
+    }
+  }
+  if (source.type === "group" && source.groupId &&
+      messageText === "เปิดรับรายงาน LPR") {
+    await db.doc(LPR_MONITOR_CONFIG_PATH).set({
+      targetId: source.groupId,
+      groupId: source.groupId,
+      registeredBy: source.userId || null,
+      command: messageText,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+    logger.info("Registered dedicated LPR monitor group", {
+      groupId: source.groupId,
+    });
+  }
+  if (source.type === "group" && source.groupId &&
+      messageText === "รับข้อมูล Pattra Daily Traffic") {
+    await db.doc(DAILY_TRAFFIC_CONFIG_PATH).set({
+      targetId: source.groupId,
+      groupId: source.groupId,
+      registeredBy: source.userId || null,
+      command: messageText,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+    logger.info("Registered daily traffic report group", {
+      groupId: source.groupId,
+    });
+  }
+  if (source.type === "group" && source.groupId &&
+      messageText === "รับรายงาน ตรวจงาน รปภ") {
+    await db.doc(GUARD_AUDIT_CONFIG_PATH).set({
+      targetId: source.groupId,
+      groupId: source.groupId,
+      registeredBy: source.userId || null,
+      command: messageText,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+    logger.info("Registered guard audit report group", {
+      groupId: source.groupId,
+    });
+  }
+  if (source.type === "group" && source.groupId &&
+      messageText === "เปิดรับ Visitor Intake") {
+    await db.doc(VISITOR_INTAKE_CONFIG_PATH).set({
+      targetId: source.groupId,
+      groupId: source.groupId,
+      registeredBy: source.userId || null,
+      command: messageText,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+    await replyLineText(
+        event.replyToken,
+        "✅ เปิดรับ Visitor Intake แล้วครับ\n\n" +
+        "ส่งข้อมูล Visitor ได้เลย:\n" +
+        "1) รูปบัตร/ใบขับขี่\n" +
+        "2) รูปรถที่เห็นทะเบียน\n" +
+        "3) บ้านเลขที่ + เหตุผล\n\n" +
+        "ตัวอย่าง:\n" +
+        "38/13\n" +
+        "ช่างมาทาสี",
+    );
+    logger.info("Registered visitor intake group", {
+      groupId: source.groupId,
+    });
+    return;
+  }
+
+  if (await isVisitorIntakeTarget(source)) {
+    try {
+      const handled = await handleVisitorIntakeEvent(event);
+      if (handled) return;
+    } catch (error) {
+      if (isLineReplyFailure(error)) {
+        logger.warn("Visitor intake saved; LINE reply suppressed", {
+          status: Number(error.status || 0) || null,
+        });
+        return;
+      }
+      logger.error("Visitor intake handling failed; retrying silently", {
+        error: error.message,
+      });
+      throw error;
+    }
+  }
+
+  if (data.groupId || data.roomId || data.userId) {
+    await db.doc(LINE_CONFIG_PATH).set(data, {merge: true});
+    logger.info("Stored LINE target", data);
+  }
+}
+
+/**
+ * Returns a Firestore-safe, stable id for LINE webhook redelivery dedupe.
+ * @param {Object} event
+ * @return {string}
+ */
+function getLineWebhookEventId(event) {
+  const webhookEventId = String(event.webhookEventId || "").trim();
+  if (/^[A-Za-z0-9_-]{1,200}$/.test(webhookEventId)) {
+    return webhookEventId;
+  }
+  return shortHash(JSON.stringify(event || {}));
+}
+
+/**
+ * Persists verified LINE events before acknowledging the webhook request.
+ * Existing ids are intentional redeliveries and must not trigger twice.
+ * @param {Object[]} events
+ * @return {Promise<number>}
+ */
+async function enqueueLineWebhookEvents(events) {
+  let queued = 0;
+  await Promise.all(events.map(async (event) => {
+    const eventId = getLineWebhookEventId(event);
+    const ref = db.collection(LINE_WEBHOOK_EVENTS_COLLECTION).doc(eventId);
+    try {
+      await ref.create({
+        event,
+        status: "queued",
+        attempts: 0,
+        eventTimestamp: Number(event.timestamp) || null,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      queued += 1;
+    } catch (error) {
+      if (Number(error.code) === 6 || error.code === "already-exists") {
+        logger.info("Ignored duplicate LINE webhook event", {eventId});
+        return;
+      }
+      throw error;
+    }
+  }));
+  return queued;
+}
+
 exports.lineWebhook = onRequest(
     {
-      secrets: [LINE_CHANNEL_SECRET, LINE_CHANNEL_ACCESS_TOKEN],
+      secrets: [LINE_CHANNEL_SECRET],
+      minInstances: 0,
+      timeoutSeconds: 10,
     },
     async (req, res) => {
       if (req.method !== "POST") {
@@ -5584,128 +7546,100 @@ exports.lineWebhook = onRequest(
 
       const body = req.body || {};
       const events = Array.isArray(body.events) ? body.events : [];
-
-      for (const event of events) {
-        const source = event.source || {};
-        await upsertLineTarget(source, event.type);
-
-        const data = {
-          sourceType: source.type || null,
-          groupId: source.groupId || null,
-          roomId: source.roomId || null,
-          userId: source.userId || null,
-          lastEventType: event.type || null,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        };
-
-        const messageText = event.type === "message" &&
-          event.message && event.message.type === "text" ?
-          String(event.message.text || "").trim() : "";
-        if (source.type === "group" && source.groupId &&
-            isSecurityShiftReportWindow(event.timestamp)) {
-          const shift = parseSecurityShiftKind(messageText) ||
-            getSecurityShiftFromTimestamp(event.timestamp);
-          const officerName = parseSecurityShiftName(messageText);
-          if (shift && officerName &&
-              /รายงานตัว|ปฏิบัติหน้าที่|เรียนมาเพื่อทราบ|รับทราบ|รปภ/i
-                  .test(messageText)) {
-            await upsertSecurityShiftReport(shift, officerName, source);
-            logger.info("Stored security shift officer", {
-              groupId: source.groupId,
-              shift,
-              officerName,
-            });
-          }
-        }
-        if (source.type === "group" && source.groupId &&
-            messageText === "เปิดรับรายงาน LPR") {
-          await db.doc(LPR_MONITOR_CONFIG_PATH).set({
-            targetId: source.groupId,
-            groupId: source.groupId,
-            registeredBy: source.userId || null,
-            command: messageText,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          }, {merge: true});
-          logger.info("Registered dedicated LPR monitor group", {
-            groupId: source.groupId,
-          });
-        }
-        if (source.type === "group" && source.groupId &&
-            messageText === "รับข้อมูล Pattra Daily Traffic") {
-          await db.doc(DAILY_TRAFFIC_CONFIG_PATH).set({
-            targetId: source.groupId,
-            groupId: source.groupId,
-            registeredBy: source.userId || null,
-            command: messageText,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          }, {merge: true});
-          logger.info("Registered daily traffic report group", {
-            groupId: source.groupId,
-          });
-        }
-        if (source.type === "group" && source.groupId &&
-            messageText === "รับรายงาน ตรวจงาน รปภ") {
-          await db.doc(GUARD_AUDIT_CONFIG_PATH).set({
-            targetId: source.groupId,
-            groupId: source.groupId,
-            registeredBy: source.userId || null,
-            command: messageText,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          }, {merge: true});
-          logger.info("Registered guard audit report group", {
-            groupId: source.groupId,
-          });
-        }
-        if (source.type === "group" && source.groupId &&
-            messageText === "เปิดรับ Visitor Intake") {
-          await db.doc(VISITOR_INTAKE_CONFIG_PATH).set({
-            targetId: source.groupId,
-            groupId: source.groupId,
-            registeredBy: source.userId || null,
-            command: messageText,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          }, {merge: true});
-          await replyLineText(
-              event.replyToken,
-              "✅ เปิดรับ Visitor Intake แล้วครับ\n\n" +
-              "ส่งข้อมูล Visitor ได้เลย:\n" +
-              "1) รูปบัตร/ใบขับขี่\n" +
-              "2) รูปรถที่เห็นทะเบียน\n" +
-              "3) บ้านเลขที่ + เหตุผล\n\n" +
-              "ตัวอย่าง:\n" +
-              "38/13\n" +
-              "ช่างมาทาสี",
-          );
-          logger.info("Registered visitor intake group", {
-            groupId: source.groupId,
-          });
-          continue;
-        }
-
-        if (await isVisitorIntakeTarget(source)) {
-          try {
-            const handled = await handleVisitorIntakeEvent(event);
-            if (handled) continue;
-          } catch (error) {
-            logger.error("Visitor intake handling failed", {
-              error: error.message,
-            });
-            await replyLineText(
-                event.replyToken,
-                "ระบบบันทึก Visitor มีปัญหาชั่วคราวครับ 🙏 " +
-                "รบกวนส่งใหม่อีกครั้ง",
-            );
-            continue;
-          }
-        }
-
-        if (data.groupId || data.roomId || data.userId) {
-          await db.doc(LINE_CONFIG_PATH).set(data, {merge: true});
-          logger.info("Stored LINE target", data);
-        }
+      try {
+        const queued = await enqueueLineWebhookEvents(events);
+        res.status(200).json({ok: true});
+        logger.info("LINE webhook acknowledged", {
+          received: events.length,
+          queued,
+        });
+      } catch (error) {
+        logger.error("Unable to enqueue LINE webhook", {
+          error: error.message,
+        });
+        res.status(500).json({ok: false});
       }
+    },
+);
 
-      res.status(200).json({ok: true});
+exports.lineWebhookWorker = onDocumentCreated(
+    {
+      document: `${LINE_WEBHOOK_EVENTS_COLLECTION}/{eventId}`,
+      secrets: [LINE_CHANNEL_ACCESS_TOKEN],
+      memory: "512MiB",
+      timeoutSeconds: 240,
+      retry: true,
+    },
+    async (triggerEvent) => {
+      const snap = triggerEvent.data;
+      if (!snap) return;
+      const eventId = triggerEvent.params.eventId;
+      const queueRef = snap.ref;
+      const queued = await db.runTransaction(async (tx) => {
+        const currentSnap = await tx.get(queueRef);
+        if (!currentSnap.exists) return null;
+        const current = currentSnap.data() || {};
+        if (current.status === "completed") return null;
+        if (current.status === "processing" && Date.now() -
+            visitorTimestampMs(current.processingAt) < 270 * 1000) {
+          throw new Error("LINE event already processing; retry after lease");
+        }
+        tx.set(queueRef, {
+          status: "processing",
+          attempts: admin.firestore.FieldValue.increment(1),
+          processingAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+        return current.event || null;
+      });
+      if (!queued) return;
+
+      try {
+        await processLineWebhookEvent(queued);
+        await queueRef.set({
+          event: admin.firestore.FieldValue.delete(),
+          status: "completed",
+          completedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+        logger.info("LINE webhook event completed", {eventId});
+      } catch (error) {
+        if (isLineContentUnavailable(error)) {
+          const source = queued.source || {};
+          const message = queued.message || {};
+          await queueRef.set({
+            status: "needs_resend",
+            recovery: {
+              reason: "line_content_unavailable",
+              messageId: String(message.id || ""),
+              messageType: String(message.type || ""),
+              targetId: getTargetIdFromSource(source),
+              eventTimestamp: Number(queued.timestamp || 0),
+              isRedelivery: queued.deliveryContext &&
+                queued.deliveryContext.isRedelivery === true,
+            },
+            lastError: String(error.message || error).slice(0, 500),
+            failedAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          }, {merge: true});
+          logger.warn("LINE media expired; resend required", {
+            eventId,
+            messageId: String(message.id || ""),
+          });
+          return;
+        }
+        await queueRef.set({
+          status: "failed",
+          lastError: String(error.message || error).slice(0, 500),
+          failedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+        logger.error("LINE webhook worker failed", {
+          eventId,
+          error: error.message,
+        });
+        throw error;
+      }
     },
 );
 
@@ -5776,18 +7710,216 @@ exports.visitorIntakeCleanup = onSchedule(
       await Promise.all(sessionsSnap.docs.map((docSnap) => docSnap.ref
           .delete()));
 
+      const webhookCutoff = admin.firestore.Timestamp.fromDate(new Date(
+          Date.now() - LINE_WEBHOOK_EVENT_RETENTION_DAYS *
+          24 * 60 * 60 * 1000,
+      ));
+      const webhookEventsSnap = await db
+          .collection(LINE_WEBHOOK_EVENTS_COLLECTION)
+          .where("updatedAt", "<=", webhookCutoff)
+          .limit(100)
+          .get();
+      await Promise.all(webhookEventsSnap.docs.map((docSnap) => docSnap.ref
+          .delete()));
+
       logger.info("Visitor intake cleanup complete", {
         imageDocs: staleImagesSnap.size,
         metadataDocs: metadataSnap.size,
         sessions: sessionsSnap.size,
+        webhookEvents: webhookEventsSnap.size,
       });
     },
 );
 
 // How long an incomplete session must sit quiet before we nudge the guard,
 // and how old before we treat it as abandoned and stop nudging.
-const VISITOR_INTAKE_REMINDER_QUIET_MS = 45 * 1000;
+const VISITOR_INTAKE_REMINDER_QUIET_MS = 3 * 60 * 1000;
 const VISITOR_INTAKE_REMINDER_FLOOR_MS = 10 * 60 * 1000;
+const VISITOR_OUTAGE_HEALTH_MAX_AGE_MS = 5 * 60 * 1000;
+
+/**
+ * Builds the hourly guard notice used only during a confirmed LINE outage.
+ * @return {string}
+ */
+function buildVisitorLineOutageNotice() {
+  return [
+    "⚠️ แจ้งสถานะระบบ Visitor",
+    "",
+    "ขณะนี้ LINE Messaging API ขัดข้องชั่วคราว",
+    "รปภ. สามารถส่งข้อมูลได้ตามปกติครับ",
+    "ระบบจะเก็บข้อมูลไว้ และประมวลผลย้อนหลังให้อัตโนมัติ",
+    "เมื่อ LINE กลับมาให้บริการตามปกติ",
+  ].join("\n");
+}
+
+/**
+ * Sends at most one Visitor outage notice per hour to its explicit target.
+ * @param {number} nowMs
+ * @return {Promise<boolean>}
+ */
+async function maybeSendVisitorLineOutageNotice(nowMs) {
+  const configRef = db.doc(VISITOR_INTAKE_CONFIG_PATH);
+  const lease = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(configRef);
+    const config = snap.exists ? snap.data() || {} : {};
+    const targetId = String(config.targetId || "").trim();
+    if (!targetId || !shouldAttemptVisitorOutageNotice(
+        config.lineOutageNoticeAttemptEpoch,
+        nowMs,
+    )) {
+      return null;
+    }
+    tx.set(configRef, {
+      lineOutageNoticeAttemptEpoch: nowMs,
+      lineOutageNoticeAttemptAt:
+        admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+    return {targetId};
+  });
+  if (!lease) return false;
+
+  try {
+    await sendLinePush(lease.targetId, buildVisitorLineOutageNotice());
+    await configRef.set({
+      lineOutageNoticeSentEpoch: nowMs,
+      lineOutageNoticeSentAt:
+        admin.firestore.FieldValue.serverTimestamp(),
+      lineOutageNoticeLastError: "",
+    }, {merge: true});
+    logger.warn("Visitor LINE outage notice sent", {
+      targetId: maskTargetId(lease.targetId),
+    });
+    return true;
+  } catch (error) {
+    await configRef.set({
+      lineOutageNoticeLastError:
+        String(error.message || error).slice(0, 300),
+    }, {merge: true});
+    logger.warn("Visitor LINE outage notice failed", {
+      targetId: maskTargetId(lease.targetId),
+      error: error.message,
+    });
+    return false;
+  }
+}
+
+/**
+ * Recovers one persisted OCR job with a lease and per-image attempt budget.
+ * Never changes visit timestamps, house assignments, images, or LINE replies.
+ * @param {FirebaseFirestore.DocumentReference} ref Intake record.
+ * @param {number} now Current time.
+ * @param {Object} options Optional dependencies for deterministic tests.
+ * @return {Promise<boolean>}
+ */
+async function recoverVisitorIntakeOcr(ref, now, options = {}) {
+  const store = options.store || db;
+  const analyze = options.analyze || analyzeVisitorIntakeImage;
+  const lease = crypto.randomUUID();
+  const claimed = await store.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return null;
+    const data = snap.data() || {};
+    const due = visitorTimestampMs(data.ocrRetryAt);
+    if (!due || due > now) return null;
+    const images = Array.isArray(data.images) ? [...data.images] : [];
+    const index = data.imagesPurged ? -1 : images.findIndex((image) =>
+      canRetryVisitorImage(image, now));
+    if (index < 0) {
+      tx.update(ref, {
+        images: images.map((image) => image.analysisPending && !image.analysis ?
+          {...image, analysisPending: false, analysisFailed: true} : image),
+        ocrRetryAt: admin.firestore.FieldValue.delete(),
+        ocrRecoveryLease: admin.firestore.FieldValue.delete(),
+      });
+      return null;
+    }
+    const image = images[index];
+    images[index] = {...image, analysisPending: true,
+      analysisAttempts: Number(image.analysisAttempts || 0) + 1};
+    tx.update(ref, {
+      images,
+      ocrRecoveryLease: lease,
+      ocrRetryAt: admin.firestore.Timestamp.fromMillis(now + 5 * 60 * 1000),
+    });
+    return image;
+  });
+  if (!claimed) return false;
+
+  const outcome = await analyzeVisitorImageWithRetry(
+      () => analyze(claimed.storagePath),
+      (error) => logger.warn("Visitor OCR recovery request failed", {
+        logId: ref.id, error: error.message,
+      }),
+      1,
+  );
+  return store.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return false;
+    const data = snap.data() || {};
+    if (data.ocrRecoveryLease !== lease) return false;
+    const images = Array.isArray(data.images) ? [...data.images] : [];
+    const index = images.findIndex((image) =>
+      image.messageId === claimed.messageId &&
+      image.storagePath === claimed.storagePath);
+    const active = !data.imagesPurged && index >= 0 &&
+      !images[index].purgedAt && !images[index].analysis &&
+      (!images[index].expiresAt ||
+        visitorTimestampMs(images[index].expiresAt) > Date.now());
+    const update = {ocrRecoveryLease: admin.firestore.FieldValue.delete()};
+    if (active) {
+      images[index] = {...images[index], ...visitorImageAnalysisPatch(outcome)};
+      const aggregates = deriveVisitorAggregatesFromImages(images);
+      update.images = images;
+      if (aggregates.ocr) {
+        update.ocr = mergeVisitorEvidence(data.ocr, aggregates.ocr);
+      }
+      if (aggregates.vehicleCapture) {
+        update.vehicleCapture = mergeVisitorEvidence(
+            data.vehicleCapture, aggregates.vehicleCapture);
+      }
+      update.status = getVisitorIntakeStatus({...data, ...update});
+      if (!outcome.failed) {
+        update.ocrRecoveredAt = admin.firestore.FieldValue.serverTimestamp();
+      }
+    }
+    const retryAt = data.imagesPurged ? null :
+      nextVisitorOcrRetryAt(images, Date.now());
+    update.ocrRetryAt = retryAt ?
+      admin.firestore.Timestamp.fromMillis(retryAt) :
+      admin.firestore.FieldValue.delete();
+    tx.update(ref, update);
+    return active && !outcome.failed;
+  });
+}
+
+exports.visitorIntakeOcrRecovery = onSchedule(
+    {
+      schedule: "every 1 minutes",
+      timeZone: "Asia/Bangkok",
+      timeoutSeconds: 180,
+      memory: "512MiB",
+      maxInstances: 1,
+    },
+    async () => {
+      const now = Date.now();
+      const due = await db.collection(VISITOR_INTAKE_COLLECTION)
+          .where("ocrRetryAt", "<=", admin.firestore.Timestamp.fromMillis(now))
+          .orderBy("ocrRetryAt", "asc")
+          .limit(2)
+          .get();
+      let recovered = 0;
+      for (const doc of due.docs) {
+        if (await recoverVisitorIntakeOcr(doc.ref, now)) {
+          recovered += 1;
+        }
+      }
+      if (due.size) {
+        logger.info("Visitor OCR recovery finished", {
+          checked: due.size, recovered,
+        });
+      }
+    },
+);
 
 exports.visitorIntakeReminder = onSchedule(
     {
@@ -5797,13 +7929,33 @@ exports.visitorIntakeReminder = onSchedule(
     },
     async () => {
       const nowMs = Date.now();
+      const healthSnap = await db.doc(SYSTEM_HEALTH_CONFIG_PATH).get();
+      const health = healthSnap.exists ? healthSnap.data() || {} : {};
+      const lineMessaging = health.lineMessaging || {};
+      const healthAgeMs = nowMs -
+        Number(lineMessaging.checkedEpoch || 0);
+      const lineConfirmedOffline = lineMessaging.status === "offline" &&
+        healthAgeMs >= 0 &&
+        healthAgeMs <= VISITOR_OUTAGE_HEALTH_MAX_AGE_MS;
+      if (lineConfirmedOffline) {
+        await maybeSendVisitorLineOutageNotice(nowMs);
+        return;
+      }
+
       const quietBefore = admin.firestore.Timestamp.fromMillis(
           nowMs - VISITOR_INTAKE_REMINDER_QUIET_MS);
       const floor = nowMs - VISITOR_INTAKE_REMINDER_FLOOR_MS;
-      // Single inequality on updatedAt keeps this index-free; status and the
-      // floor/reminder checks are applied in code.
+      // Both bounds are range filters on the same field, so this still needs
+      // no composite index — but the lower bound matters: without it every
+      // run read the 50 most recent quiet records, virtually all of them long
+      // -completed visits that the in-code checks below then discarded. Once
+      // an intake is older than the floor it can never be reminded, so
+      // bounding the query costs nothing and turns ~50 reads per minute into
+      // roughly the number of intakes actually in flight. Status and the
+      // reminder checks stay in code.
       const snap = await db.collection(VISITOR_INTAKE_COLLECTION)
           .where("updatedAt", "<=", quietBefore)
+          .where("updatedAt", ">=", admin.firestore.Timestamp.fromMillis(floor))
           .orderBy("updatedAt", "desc")
           .limit(50)
           .get();
@@ -5811,7 +7963,7 @@ exports.visitorIntakeReminder = onSchedule(
       let sent = 0;
       for (const doc of snap.docs) {
         const data = doc.data() || {};
-        if (data.status === "complete") continue;
+        if (["complete", "partial"].includes(data.status)) continue;
         const updatedMs = data.updatedAt && data.updatedAt.toMillis ?
           data.updatedAt.toMillis() : 0;
         if (updatedMs < floor) continue;
@@ -5823,6 +7975,8 @@ exports.visitorIntakeReminder = onSchedule(
         try {
           await sendLinePush(to, buildVisitorIntakeReply(data));
           await doc.ref.set({
+            lastReplyAt: admin.firestore.FieldValue.serverTimestamp(),
+            lastReplyText: buildVisitorIntakeReply(data),
             reminderSentAt: admin.firestore.FieldValue.serverTimestamp(),
           }, {merge: true});
           sent += 1;
@@ -5884,7 +8038,9 @@ function deriveVisitorAggregatesFromImages(images) {
   let vehicleCapture = null;
   (Array.isArray(images) ? images : []).forEach((image) => {
     const analysis = image.analysis || {};
-    if (image.kind === "document" && analysis.personName) {
+    if (["document", "document_vehicle"].includes(image.kind) &&
+        (analysis.personName || analysis.thaiPersonName ||
+          analysis.englishPersonName || analysis.documentNumber)) {
       ocr = {
         personName: analysis.personName || "",
         thaiPersonName: analysis.thaiPersonName || "",
@@ -5895,7 +8051,8 @@ function deriveVisitorAggregatesFromImages(images) {
         confidence: analysis.confidence || 0,
       };
     }
-    if (image.kind === "vehicle" && analysis.vehiclePlate) {
+    if (["vehicle", "document_vehicle"].includes(image.kind) &&
+        analysis.vehiclePlate) {
       vehicleCapture = {
         plateText: normalizeVisitorPlate(analysis.vehiclePlate),
         vehicleType: normalizeVisitorVehicleType(analysis.vehicleType),
@@ -5917,6 +8074,9 @@ async function mapVisitorIntakeDoc(docSnap) {
   const bucketName = admin.storage().bucket().name;
   const safeImages = await Promise.all(images.map(async (image) => ({
     kind: image.kind || "other",
+    analysisPending: image.analysisPending === true,
+    analysisFailed: image.analysisFailed === true,
+    analysisRetryable: image.analysisRetryable !== false,
     messageId: image.messageId || "",
     contentType: image.contentType || "",
     sizeBytes: image.sizeBytes || 0,
@@ -5945,15 +8105,110 @@ async function mapVisitorIntakeDoc(docSnap) {
     createdAt: data.createdAt || null,
     updatedAt: data.updatedAt || null,
     houseNo: data.houseNo || "",
+    houseNos: Array.isArray(data.houseNos) ? data.houseNos : [],
     purposeText: data.purposeText || "",
     purposeCategory: data.purposeCategory || "unknown",
     status: data.status || "unknown",
     lprLinked: Boolean(data.lprLinked),
     imagesPurged: Boolean(data.imagesPurged),
+    ocrRetryAt: data.ocrRetryAt || null,
+    ocrRecoveredAt: data.ocrRecoveredAt || null,
     ocr: data.ocr || null,
     vehicleCapture: data.vehicleCapture || null,
     rawTexts: Array.isArray(data.rawTexts) ? data.rawTexts : [],
+    warnings: buildVisitorWarnings(data),
+    warningCodes: getVisitorWarningCodes(data),
     images: safeImages,
+  };
+}
+
+/**
+ * Converts Firestore-ish values into an ISO string when possible.
+ * @param {*} value
+ * @return {string}
+ */
+function toIsoString(value) {
+  if (!value) return "";
+  if (typeof value.toDate === "function") {
+    try {
+      return value.toDate().toISOString();
+    } catch (_) {
+      return "";
+    }
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? new Date(value).toISOString() : "";
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? "" : new Date(parsed).toISOString();
+  }
+  return "";
+}
+
+/**
+ * Reads a collection's count and date range with minimal document reads.
+ * @param {FirebaseFirestore.CollectionReference} collectionRef
+ * @param {string} dateField
+ * @return {Promise<{count: number, oldestAt: string, newestAt: string}>}
+ */
+async function summarizeCollectionDates(collectionRef, dateField) {
+  const [countSnap, oldestSnap, newestSnap] = await Promise.all([
+    collectionRef.count().get(),
+    collectionRef.orderBy(dateField, "asc").limit(1).get(),
+    collectionRef.orderBy(dateField, "desc").limit(1).get(),
+  ]);
+  const count = Number(countSnap.data().count || 0);
+  const oldestAt = oldestSnap.empty ? "" :
+    toIsoString(oldestSnap.docs[0].data()[dateField]);
+  const newestAt = newestSnap.empty ? "" :
+    toIsoString(newestSnap.docs[0].data()[dateField]);
+  return {count, oldestAt, newestAt};
+}
+
+/**
+ * Summarizes the files stored under one Storage prefix.
+ * @param {string} prefix
+ * @return {Promise<{fileCount: number, totalBytes: number}>}
+ */
+async function summarizeStoragePrefix(prefix) {
+  const bucket = admin.storage().bucket();
+  const [files] = await bucket.getFiles({prefix});
+  let fileCount = 0;
+  let totalBytes = 0;
+  for (const file of files) {
+    fileCount += 1;
+    const size = Number(file.metadata && file.metadata.size) || 0;
+    totalBytes += size;
+  }
+  return {fileCount, totalBytes};
+}
+
+/**
+ * Builds one storage summary row for a Firestore collection and file prefix.
+ * @param {Object} config
+ * @param {string} config.label
+ * @param {string} config.collectionName
+ * @param {string} config.dateField
+ * @param {string} config.storagePrefix
+ * @return {Promise<Object>}
+ */
+async function buildStorageStatsRow(config) {
+  const collectionRef = db.collection(config.collectionName);
+  const [collectionStats, storageStats] = await Promise.all([
+    summarizeCollectionDates(collectionRef, config.dateField),
+    summarizeStoragePrefix(config.storagePrefix),
+  ]);
+  return {
+    label: config.label,
+    collectionName: config.collectionName,
+    dateField: config.dateField,
+    storagePrefix: config.storagePrefix,
+    docCount: collectionStats.count,
+    fileCount: storageStats.fileCount,
+    totalBytes: storageStats.totalBytes,
+    oldestAt: collectionStats.oldestAt,
+    newestAt: collectionStats.newestAt,
   };
 }
 
@@ -5976,8 +8231,66 @@ exports.visitorIntakeAdmin = onRequest(
 
       try {
         const body = req.body || {};
-        await verifyAdminResidentAccess(body, "admin.audit");
         const action = String(body.action || "list");
+
+        if (action === "myVisitors") {
+          // Resident-facing "My Visitor" digital footprint for
+          // /myvisitor/ — any resident with a valid PIN sees only THEIR
+          // OWN house's visitor-intake history (delivery/technician/guest
+          // entries with ID + vehicle photos). Always scopes to the house
+          // that just passed PIN verification; never trusts any other
+          // house field from the client. Strips the raw OCR document
+          // number (keeps only the pre-masked version) even though the
+          // committee view below returns it — a resident viewing their
+          // own log has no audit justification for the unmasked ID
+          // number. Uses .orderBy() (unlike the committee "list" action's
+          // client-side sort) because this query has no date bound over
+          // the 365-day retention window, so an unordered .limit() could
+          // silently return an arbitrary, not-necessarily-recent subset.
+          const houseNo = normalizeHouseNo(body.houseNo);
+          const pin = String(body.pin || "");
+          await verifyResidentPinInternal(houseNo, pin);
+          logFeatureUsage("myvisitor", houseNo);
+          const limit = Math.min(Math.max(Number(body.limit || 150), 1),
+              300);
+          const snap = await db.collection(VISITOR_INTAKE_COLLECTION)
+              .where("houseNo", "==", houseNo)
+              .orderBy("createdAt", "desc")
+              .limit(limit)
+              .get();
+          const records = await Promise.all(snap.docs.map(mapVisitorIntakeDoc));
+          records.forEach((r) => {
+            if (r.ocr) delete r.ocr.documentNumber;
+            (r.images || []).forEach((img) => {
+              if (img.analysis) delete img.analysis.documentNumber;
+            });
+          });
+          // Cross-reference the visitor's photographed plate against the
+          // brand/color profile already built from gate-camera captures of
+          // that same plate (the same lookup buildDailyTrafficReport uses
+          // for the LINE daily/night traffic cards), so a car's make/model/
+          // color can show up here even though visitor-intake's own photo
+          // analysis only extracts plate + vehicleType, not brand/color.
+          const lookupRows = records.map((r) => ({
+            plate: (r.vehicleCapture && r.vehicleCapture.plateText) ?
+              stripThaiProvinceForLookup(r.vehicleCapture.plateText) : "",
+          }));
+          const enrichedRows = await attachVehicleProfiles(lookupRows);
+          records.forEach((r, i) => {
+            if (enrichedRows[i] && enrichedRows[i].vehicleVision) {
+              r.vehicleVision = enrichedRows[i].vehicleVision;
+            }
+          });
+          res.status(200).json({
+            ok: true,
+            houseNo,
+            records,
+            hasMore: snap.docs.length === limit,
+          });
+          return;
+        }
+
+        await verifyAdminResidentAccess(body, "admin.audit");
 
         if (action === "delete") {
           const rawIds = Array.isArray(body.recordIds) ? body.recordIds :
@@ -6114,7 +8427,7 @@ exports.visitorIntakeAdmin = onRequest(
             "✅ เคสนี้บันทึกครบถ้วนแล้วครับ",
             "",
             `🏠 บ้าน : ${data.houseNo || "-"}`,
-            `✏️ เหตุผล : ${visitorPurposeLabel(
+            `✏️ เหตุผล : ${visitorReplyPurposeLabel(
                 data.purposeCategory,
                 data.purposeText,
             )}`,
@@ -6348,8 +8661,11 @@ exports.visitorIntakeAdmin = onRequest(
         const records = await Promise.all(docs.map(mapVisitorIntakeDoc));
         const stats = {
           total: records.length,
-          complete: records.filter((r) => r.status === "complete").length,
-          pending: records.filter((r) => r.status !== "complete").length,
+          complete: records.filter((r) =>
+            ["complete", "partial"].includes(r.status)).length,
+          partial: records.filter((r) => r.status === "partial").length,
+          pending: records.filter((r) =>
+            !["complete", "partial"].includes(r.status)).length,
           withVehiclePlate: records.filter((r) =>
             r.vehicleCapture && r.vehicleCapture.plateText,
           ).length,
@@ -6515,6 +8831,39 @@ function writeAuditLog(action, houseNo, extra = {}, success = true) {
   }).catch((err) => logger.warn("audit_log write failed", err));
 }
 
+// Every feature slug logFeatureUsage() will accept from client-supplied
+// input (getResidentData's optional `feature`, residentPinAuth's
+// "pingFeatureView"). Calls that pass a hardcoded literal (myVisitors,
+// visitorBoard, myReceipts, myIssues) don't need to go through this list.
+const FEATURE_USAGE_FEATURES = new Set([
+  "data", "vehicle", "myvisitor", "visitorboard", "myreceipt", "myparking",
+  "parking", "report",
+]);
+
+/**
+ * Records that a house viewed a resident-facing feature (fire-and-forget).
+ * One doc per house/feature/Bangkok-day, merged in place — unlike
+ * writeAuditLog this never grows past one row per house per feature per
+ * day, so a resident refreshing a page 50 times doesn't flood the log.
+ * Powers the admin "การใช้งานบ้าน" (House Usage) breakdown, kept separate
+ * from the Activity Log tab (writeAuditLog), which stays reserved for
+ * actual writes/edits (resident_update, pin_change, submit_request, ...).
+ * @param {string} feature short slug, e.g. "myvisitor", "myparking"
+ * @param {string} houseNo
+ */
+function logFeatureUsage(feature, houseNo) {
+  const date = getTodayBangkokDate();
+  const docId = `${residentPinDocId(houseNo)}__${feature}__${date}`;
+  db.collection(FEATURE_USAGE_COLLECTION).doc(docId).set({
+    houseNo,
+    feature,
+    date,
+    count: admin.firestore.FieldValue.increment(1),
+    lastSeen: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true}).catch((err) =>
+    logger.warn("feature_usage write failed", err));
+}
+
 exports.residentPinAuth = onRequest(
     {secrets: [LPR_ADMIN_PASSWORD]},
     async (req, res) => {
@@ -6557,6 +8906,70 @@ exports.residentPinAuth = onRequest(
           return;
         }
 
+        if (action === "adminFeatureUsage") {
+          // Coarse "which house used what" — backs the House Usage tab's
+          // per-feature breakdown. Separate from adminAuditLogs: this reads
+          // logFeatureUsage's one-row-per-house-per-feature-per-day docs,
+          // so it stays small even when residents refresh a page constantly.
+          await verifyAdminResidentAccess(body, "admin.audit");
+          const limit = Math.min(Math.max(Number(body.limit || 3000), 1),
+              5000);
+          const snap = await db.collection(FEATURE_USAGE_COLLECTION)
+              .orderBy("date", "desc")
+              .limit(limit)
+              .get();
+          res.status(200).json({
+            ok: true,
+            usage: snap.docs.map((doc) => {
+              const u = doc.data() || {};
+              return {
+                houseNo: u.houseNo || "",
+                feature: u.feature || "",
+                date: u.date || "",
+                count: u.count || 0,
+                lastSeen: u.lastSeen && u.lastSeen.toDate ?
+                  u.lastSeen.toDate().toISOString() : u.lastSeen || null,
+              };
+            }),
+          });
+          return;
+        }
+
+        if (action === "adminStorageStats") {
+          await verifyAdminResidentAccess(body, "admin.audit");
+          const [lprLog, visitorIntake] = await Promise.all([
+            buildStorageStatsRow({
+              label: "LPR log",
+              collectionName: LPR_TRAFFIC_EVENTS_COLLECTION,
+              dateField: "capturedAtEpoch",
+              storagePrefix: `${LPR_CAPTURES_PREFIX}/`,
+            }),
+            buildStorageStatsRow({
+              label: "Visitor intake",
+              collectionName: VISITOR_INTAKE_COLLECTION,
+              dateField: "createdAt",
+              storagePrefix: "visitor-intake/",
+            }),
+          ]);
+
+          const totals = {
+            docCount: lprLog.docCount + visitorIntake.docCount,
+            fileCount: lprLog.fileCount + visitorIntake.fileCount,
+            totalBytes: lprLog.totalBytes + visitorIntake.totalBytes,
+          };
+
+          res.status(200).json({
+            ok: true,
+            generatedAt: new Date().toISOString(),
+            totals,
+            features: {
+              lprLog,
+              visitorIntake,
+            },
+          });
+          return;
+        }
+
         if (action === "adminResidents") {
           await verifyAdminResidentAccess(body, "admin.residents");
           const [snap, pinSnap] = await Promise.all([
@@ -6580,6 +8993,12 @@ exports.residentPinAuth = onRequest(
             const pin = pinByHouse.get(house) || {};
             const lastLoginAt = pin.lastLoginAt && pin.lastLoginAt.toDate ?
           pin.lastLoginAt.toDate().toISOString() : "";
+            const lastActivityAt =
+              pin.lastActivityAt && pin.lastActivityAt.toDate ?
+                pin.lastActivityAt.toDate().toISOString() : "";
+            const firstActivityAt =
+              pin.firstActivityAt && pin.firstActivityAt.toDate ?
+                pin.firstActivityAt.toDate().toISOString() : "";
             return {
               house_no: house,
               houseNo: house,
@@ -6604,6 +9023,9 @@ exports.residentPinAuth = onRequest(
               note: r.note || "",
               pinSet: Boolean(pin.pinHash),
               lastLogin: lastLoginAt,
+              lastActivity: lastActivityAt,
+              firstActivity: firstActivityAt,
+              activityCount: Number(pin.activityCount || 0),
               last_updated: r.last_updated || "",
               lastUpdated: r.last_updated || "",
               lpr_sync_pending: !!r.lpr_sync_pending,
@@ -6618,6 +9040,24 @@ exports.residentPinAuth = onRequest(
             return an - bn;
           });
           res.status(200).json({ok: true, residents});
+          return;
+        }
+
+        if (action === "pingFeatureView") {
+          // Generic, low-stakes "this house opened <feature>" ping for pages
+          // with no dedicated resident-facing read action of their own (the
+          // /parking/ slot map is public Firestore, no Cloud Function call
+          // to piggyback on) or that share getResidentData across several
+          // different pages and need to say which one. Feature is
+          // allowlisted so a bad client can't write junk into the usage log.
+          const feature = String(body.feature || "");
+          if (!FEATURE_USAGE_FEATURES.has(feature)) {
+            res.status(400).json({ok: false, error: "Unknown feature"});
+            return;
+          }
+          await verifyResidentPinInternal(houseNo, String(body.pin || ""));
+          logFeatureUsage(feature, houseNo);
+          res.status(200).json({ok: true});
           return;
         }
 
@@ -6735,13 +9175,17 @@ exports.residentPinAuth = onRequest(
             }, {merge: true});
           }
 
-          const changedFields = Object.keys(patch).filter((key) => ![
-            "house_no",
-            "last_updated",
-            "updatedAt",
-            "updatedBy",
-            "updatedByIp",
-          ].includes(key));
+          const changedFields = Object.keys(patch)
+              .filter((key) => ![
+                "house_no",
+                "last_updated",
+                "updatedAt",
+                "updatedBy",
+                "updatedByIp",
+              ].includes(key))
+              .filter((key) => !residentAuditValuesEqual(
+                  key, oldData[key], patch[key],
+              ));
           writeAuditLog("admin_resident_update", patch.house_no, {
             ip: req.ip,
             changedFields,
@@ -6930,8 +9374,31 @@ exports.adminAccessMatrix = onRequest(async (req, res) => {
     if (action === "resolve") {
       const houseNo = normalizeHouseNo(body.houseNo);
       const pin = String(body.pin || "");
-      await verifyResidentPinInternal(houseNo, pin);
-      const access = await getAdminAccess(houseNo);
+      if (!houseNo || !pin) {
+        res.status(401).json({ok: false, error: "Missing credentials"});
+        return;
+      }
+      // This runs on every landing-page load, so trim the Firestore round
+      // trips: the PIN read and the access read are independent, and the
+      // activity counter can ride along with whichever finishes last.
+      const accessPromise = getAdminAccess(houseNo);
+      accessPromise.catch(() => {});
+      const pinData = await verifyResidentPinInternal(houseNo, pin);
+
+      const activityPatch = {
+        lastActivityAt: admin.firestore.FieldValue.serverTimestamp(),
+        activityCount: admin.firestore.FieldValue.increment(1),
+      };
+      if (!pinData.firstActivityAt) {
+        activityPatch.firstActivityAt =
+          admin.firestore.FieldValue.serverTimestamp();
+      }
+      const [access] = await Promise.all([
+        accessPromise,
+        db.collection(RESIDENT_PIN_COLLECTION)
+            .doc(residentPinDocId(houseNo))
+            .set(activityPatch, {merge: true}),
+      ]);
       res.status(200).json({ok: true, access});
       return;
     }
@@ -7064,6 +9531,502 @@ exports.adminAccessMatrix = onRequest(async (req, res) => {
   }
 });
 
+// Functions the pattra8.com landing page blocks on. A cold start costs ~2s
+// there, which is what made the admin cards pop in late — so keep one
+// instance of each alive during the hours residents actually browse.
+const WARM_TARGET_FUNCTIONS = ["adminAccessMatrix", "getResidentData"];
+
+/**
+ * Sends a preflight-shaped OPTIONS request, which every handler answers with
+ * 204 before touching Firestore — enough to keep the instance resident.
+ * @param {string} fnName
+ * @return {Promise<void>}
+ */
+async function warmFunction(fnName) {
+  const projectId = process.env.GCLOUD_PROJECT || "pattra8-54c3f";
+  const url =
+    `https://asia-southeast1-${projectId}.cloudfunctions.net/${fnName}`;
+  try {
+    await fetch(url, {
+      method: "OPTIONS",
+      headers: {
+        "Origin": "https://pattra8.com",
+        "Access-Control-Request-Method": "POST",
+      },
+    });
+  } catch (err) {
+    logger.warn(`warmFunction ${fnName} failed`, err);
+  }
+}
+
+exports.authWarmPing = onSchedule(
+    {
+      schedule: "*/5 6-22 * * *",
+      timeZone: "Asia/Bangkok",
+      memory: "256MiB",
+      timeoutSeconds: 60,
+    },
+    async () => {
+      await Promise.all(WARM_TARGET_FUNCTIONS.map(warmFunction));
+    },
+);
+
+exports.lineFlexRoutingAdmin = onRequest({
+  secrets: [LINE_CHANNEL_ACCESS_TOKEN],
+}, async (req, res) => {
+  setCorsHeaders(req, res);
+  if (req.method === "OPTIONS") {
+    res.status(204).send("");
+    return;
+  }
+  if (req.method !== "POST") {
+    res.status(405).json({ok: false, error: "Method Not Allowed"});
+    return;
+  }
+
+  try {
+    const body = req.body || {};
+    const action = String(body.action || "get").trim();
+
+    await verifyAdminResidentAccess(body, "admin.portal");
+
+    if (action === "get") {
+      const targets = await getLineFlexTargetOptions();
+      res.status(200).json({
+        ok: true,
+        config: await getLineFlexRoutingConfig(),
+        targets,
+        routes: getDefaultLineFlexRoutes(),
+      });
+      return;
+    }
+
+    if (action === "save") {
+      const targetOptions = await getLineFlexTargetOptions();
+      const allowedTargetIds = new Set(
+          targetOptions.map((item) => item.targetId).filter(Boolean),
+      );
+      const incomingFlows = body.flows && typeof body.flows === "object" ?
+        body.flows : {};
+      const flows = getDefaultLineFlexFlows();
+      Object.keys(flows).forEach((routeKey) => {
+        const saved = incomingFlows[routeKey] &&
+          typeof incomingFlows[routeKey] === "object" ?
+          incomingFlows[routeKey] : {};
+        const sandboxTargetId = normalizeLineFlexTargetId(
+            saved.sandboxTargetId || flows[routeKey].sandboxTargetId,
+        );
+        const productionTargetId = normalizeLineFlexTargetId(
+            saved.productionTargetId || flows[routeKey].productionTargetId,
+        );
+
+        if (!allowedTargetIds.has(sandboxTargetId)) {
+          throw new Error(`Sandbox target for ${routeKey} is not registered`);
+        }
+        if (!allowedTargetIds.has(productionTargetId)) {
+          throw new Error(
+              `Production target for ${routeKey} is not registered`,
+          );
+        }
+
+        flows[routeKey] = {
+          sandboxTargetId,
+          productionTargetId,
+          activeMode: normalizeLineFlexRouteChoice(saved.activeMode),
+        };
+      });
+
+      await db.doc(LINE_FLEX_ROUTING_CONFIG_PATH).set({
+        flows,
+        routes: Object.fromEntries(Object.keys(flows).map((routeKey) => [
+          routeKey,
+          flows[routeKey].activeMode,
+        ])),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedBy: normalizeHouseNo(body.houseNo || "") || "38/8",
+      }, {merge: true});
+
+      res.status(200).json({
+        ok: true,
+        config: await getLineFlexRoutingConfig(),
+        targets: targetOptions,
+        routes: getDefaultLineFlexRoutes(),
+      });
+      return;
+    }
+
+    if (action === "reset") {
+      const flows = getDefaultLineFlexFlows();
+      const targets = await getLineFlexTargetOptions();
+      await db.doc(LINE_FLEX_ROUTING_CONFIG_PATH).set({
+        flows,
+        routes: Object.fromEntries(Object.keys(flows).map((routeKey) => [
+          routeKey,
+          flows[routeKey].activeMode,
+        ])),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedBy: normalizeHouseNo(body.houseNo || "") || "38/8",
+      }, {merge: true});
+
+      res.status(200).json({
+        ok: true,
+        config: await getLineFlexRoutingConfig(),
+        targets,
+        routes: getDefaultLineFlexRoutes(),
+      });
+      return;
+    }
+
+    if (action === "sendPattraPaySandbox") {
+      const config = await getLineFlexRoutingConfig();
+      const flow = config.flows && config.flows.pattraPay ?
+        config.flows.pattraPay : getDefaultLineFlexFlows().pattraPay;
+      const targetId = normalizeLineFlexTargetId(
+          flow && flow.sandboxTargetId,
+      );
+      if (!targetId) {
+        throw new Error("Pattra Pay sandbox target is not configured");
+      }
+      const data = await buildPaymentHeatmapData({
+        feeType: body.feeType,
+        period: body.period,
+        year: body.year,
+      });
+      const message = buildPaymentHeatmapFlexMessage(data);
+      await sendLinePushMessages(targetId, [message]);
+      res.status(200).json({
+        ok: true,
+        targetId,
+        targetLabel: buildTargetLabelFromId(targetId),
+        data,
+      });
+      return;
+    }
+
+    if (action === "sendVisitorOutageNoticeSandbox") {
+      const targetId = LINE_FLEX_SANDBOX_TARGET_ID;
+      const text = buildVisitorLineOutageNotice();
+      await sendLinePush(targetId, `[ทดสอบ Sandbox]\n${text}`);
+      logger.info("Visitor outage notice sandbox sent", {
+        targetId: maskTargetId(targetId),
+      });
+      res.status(200).json({
+        ok: true,
+        action,
+        targetId: maskTargetId(targetId),
+        targetLabel: buildTargetLabelFromId(targetId),
+      });
+      return;
+    }
+
+    if (action === "sendWeeklySafetySandboxPreview") {
+      const report = {
+        preview: true,
+        startDate: "2026-07-19",
+        endDate: "2026-07-25",
+        dateLabel: "19–25 กรกฎาคม 2569",
+        generatedAt: new Date().toISOString(),
+        trafficCars: 486,
+        residentCars: 312,
+        externalCars: 174,
+        visitorCars: 174,
+        checkedCars: 165,
+        uncheckedCars: 9,
+        checkPercent: 94.8,
+        motorcycleCount: 31,
+        unreadableDetections: 8,
+        busiestHour: 17,
+        busiestCount: 42,
+        cameraComplete: true,
+        purposes: [
+          {label: "ส่งอาหารและพัสดุ", count: 82},
+          {label: "ช่างและผู้รับเหมา", count: 46},
+          {label: "ติดต่อบ้านลูกบ้าน", count: 38},
+          {label: "อื่น ๆ", count: 8},
+        ],
+      };
+      const message = buildWeeklySafetyFlexMessage(report);
+      const messageBytes = Buffer.byteLength(
+          JSON.stringify(message.contents), "utf8");
+      if (messageBytes > 29000) {
+        throw new Error(
+            `Weekly safety preview Flex is too large (${messageBytes})`,
+        );
+      }
+      const targetId = LINE_FLEX_SANDBOX_TARGET_ID;
+      await sendLinePushMessages(targetId, [message]);
+      logger.info("Weekly safety sandbox preview sent", {
+        targetId: maskTargetId(targetId),
+        messageBytes,
+      });
+      res.status(200).json({
+        ok: true,
+        action,
+        targetId: maskTargetId(targetId),
+        targetLabel: buildTargetLabelFromId(targetId),
+        messageBytes,
+        report,
+      });
+      return;
+    }
+
+    if (action === "sendWeeklySafetySandbox") {
+      const endDate = String(
+          body.endDate || getYesterdayBangkokDate(),
+      ).trim();
+      const report = await buildWeeklySafetyReport(endDate);
+      const message = buildWeeklySafetyFlexMessage(report);
+      const messageBytes = Buffer.byteLength(
+          JSON.stringify(message.contents), "utf8");
+      if (messageBytes > 29000) {
+        throw new Error(`Weekly safety Flex is too large (${messageBytes})`);
+      }
+      const targetId = LINE_FLEX_SANDBOX_TARGET_ID;
+      await sendLinePushMessages(targetId, [message]);
+      logger.info("Weekly safety sandbox sent", {
+        startDate: report.startDate,
+        endDate: report.endDate,
+        targetId: maskTargetId(targetId),
+        messageBytes,
+      });
+      res.status(200).json({
+        ok: true,
+        action,
+        targetId: maskTargetId(targetId),
+        targetLabel: buildTargetLabelFromId(targetId),
+        messageBytes,
+        report,
+      });
+      return;
+    }
+
+    if (action === "sendNativeImageFlexSandbox") {
+      const media = Array.isArray(body.media) ? body.media : [];
+      if (media.length !== 1) {
+        throw new Error("Exactly one image is required");
+      }
+      const parsed = parseAnnouncementImage(media[0]);
+      const sharp = require("sharp");
+      const metadata = await sharp(parsed.buffer).metadata();
+      const width = Number(metadata.width || 0);
+      const height = Number(metadata.height || 0);
+      if (!width || !height || height > width * 3) {
+        throw new Error("Image aspect ratio is not supported by LINE Flex");
+      }
+
+      const title = String(
+          body.title || "แยกขยะวันนี้ เพื่อชุมชนของเรา",
+      ).trim().slice(0, 120);
+      const imageHash = crypto.createHash("sha256")
+          .update(parsed.buffer)
+          .digest("hex");
+      const broadcastRef = db.collection(LINE_BROADCASTS_COLLECTION).doc();
+      const uploaded = await uploadAnnouncementImages(
+          broadcastRef.id,
+          media,
+          "line-flex-sandbox",
+      );
+      const image = uploaded[0];
+      const message = {
+        type: "flex",
+        altText: title,
+        contents: {
+          type: "bubble",
+          size: "giga",
+          hero: {
+            type: "image",
+            url: image.url,
+            size: "full",
+            aspectRatio: `${width}:${height}`,
+            aspectMode: "fit",
+            backgroundColor: "#FFFFFF",
+            action: {
+              type: "uri",
+              label: "ดูภาพขนาดเต็ม",
+              uri: image.url,
+            },
+          },
+        },
+      };
+      const messageBytes = Buffer.byteLength(
+          JSON.stringify(message.contents), "utf8");
+      const targetId = LINE_FLEX_SANDBOX_TARGET_ID;
+      await sendLinePushMessages(targetId, [message]);
+      await broadcastRef.set({
+        channel: ANNOUNCEMENT_CHANNEL,
+        category: "native_flex_image",
+        type: "native_flex_image",
+        source: "line_flex_sandbox",
+        sendMode: "sandbox",
+        title,
+        body: "",
+        message: "",
+        lineTargetId: targetId,
+        lineTargetLabel: buildTargetLabelFromId(targetId),
+        imageHash,
+        imageWidth: width,
+        imageHeight: height,
+        messageBytes,
+        media: uploaded,
+        sentAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      logger.info("Native image Flex sandbox sent", {
+        targetId: maskTargetId(targetId),
+        imageHash: imageHash.slice(0, 12),
+        width,
+        height,
+        messageBytes,
+      });
+      res.status(200).json({
+        ok: true,
+        action,
+        targetId: maskTargetId(targetId),
+        targetLabel: buildTargetLabelFromId(targetId),
+        title,
+        imageHash,
+        width,
+        height,
+        contentType: image.contentType,
+        storagePath: image.storagePath,
+        messageBytes,
+      });
+      return;
+    }
+
+    if (action === "sendFlowTest") {
+      const flowKey = String(body.flowKey || "").trim();
+      const mode = normalizeLineFlexRouteChoice(body.mode);
+      const config = await getLineFlexRoutingConfig();
+      const flows = config.flows || getDefaultLineFlexFlows();
+      const flow = flows[flowKey];
+      const targetId = mode === "sandbox" ?
+        normalizeLineFlexTargetId(flow && flow.sandboxTargetId) :
+        normalizeLineFlexTargetId(flow && flow.productionTargetId);
+      if (!targetId) {
+        const targetLabel = mode === "sandbox" ? "Sandbox" : "Production";
+        throw new Error(
+            `${targetLabel} target for ${flowKey} is not configured`,
+        );
+      }
+
+      if (flowKey === "daily") {
+        const report = await runDailyTrafficReport(
+            getTodayBangkokDate(),
+            true,
+            targetId,
+        );
+        res.status(200).json({
+          ok: true,
+          flowKey,
+          mode,
+          targetId,
+          targetLabel: buildTargetLabelFromId(targetId),
+          report,
+        });
+        return;
+      }
+
+      if (flowKey === "night") {
+        const report = await runOvernightSecurityReport(
+            getYesterdayBangkokDate(),
+            true,
+            0,
+            0,
+            7,
+            30,
+            targetId,
+        );
+        res.status(200).json({
+          ok: true,
+          flowKey,
+          mode,
+          targetId,
+          targetLabel: buildTargetLabelFromId(targetId),
+          report,
+        });
+        return;
+      }
+
+      if (flowKey === "guardDay" || flowKey === "guardNight") {
+        const nightShift = flowKey === "guardNight";
+        const report = await runSecurityAuditReport(
+            nightShift ? getYesterdayBangkokDate() : getTodayBangkokDate(),
+            true,
+            nightShift ? 19 : 7,
+            30,
+            nightShift ? 7 : 19,
+            30,
+            targetId,
+        );
+        res.status(200).json({
+          ok: true,
+          flowKey,
+          mode,
+          targetId,
+          targetLabel: buildTargetLabelFromId(targetId),
+          report,
+        });
+        return;
+      }
+
+      if (flowKey === "pattraPay") {
+        const data = await buildPaymentHeatmapData({
+          feeType: body.feeType,
+          period: body.period,
+          year: body.year,
+        });
+        const message = buildPaymentHeatmapFlexMessage(data);
+        await sendLinePushMessages(targetId, [message]);
+        res.status(200).json({
+          ok: true,
+          flowKey,
+          mode,
+          targetId,
+          targetLabel: buildTargetLabelFromId(targetId),
+          data,
+        });
+        return;
+      }
+
+      if (flowKey === "pattraReport") {
+        const text = buildLineMessage(mode === "sandbox" ?
+          "ตัวอย่างแจ้งปัญหาใหม่ (ทดสอบ sandbox)" :
+          "ตัวอย่างแจ้งปัญหาใหม่ (ทดสอบ production)", {
+          house: "38/8",
+          category: "ทดสอบระบบ",
+          title: mode === "sandbox" ?
+            "ทดสอบส่งเข้า sandbox" :
+            "ทดสอบส่งเข้า production",
+          description: "ข้อความตัวอย่างจากหน้า LINE Flex Routing",
+          priority: "normal",
+          date: new Date().toLocaleDateString("th-TH"),
+        });
+        await sendLinePush(targetId, text);
+        res.status(200).json({
+          ok: true,
+          flowKey,
+          mode,
+          targetId,
+          targetLabel: buildTargetLabelFromId(targetId),
+          preview: true,
+        });
+        return;
+      }
+
+      throw new Error(`Unsupported test flow: ${flowKey}`);
+    }
+
+    res.status(400).json({ok: false, error: "Invalid action"});
+  } catch (err) {
+    logger.error("lineFlexRoutingAdmin failed", err);
+    const status = err.status ||
+      (/PIN must|Missing|Invalid action/i.test(err.message) ? 400 : 500);
+    res.status(status).json({ok: false, error: err.message});
+  }
+});
+
 exports.broadcastLineAnnouncement = onRequest(
     {
       secrets: [LINE_CHANNEL_ACCESS_TOKEN],
@@ -7087,6 +10050,20 @@ exports.broadcastLineAnnouncement = onRequest(
         const body = req.body || {};
         const action = String(body.action || "send");
 
+        if (action === "listBroadcastTargets") {
+          await verifyAccessMatrixManager(body);
+          const targets = (await getLineFlexTargetOptions())
+              .filter((target) =>
+                target.targetId !== LINE_FLEX_SANDBOX_TARGET_ID,
+              );
+          res.status(200).json({
+            ok: true,
+            sandboxTarget: LINE_FLEX_TARGETS.sandbox,
+            productionTargets: targets,
+          });
+          return;
+        }
+
         if (action === "listTargets") {
           await verifyAdminResidentAccess(body, "admin.announcements");
           const targets = await getLineTargets();
@@ -7094,24 +10071,64 @@ exports.broadcastLineAnnouncement = onRequest(
           return;
         }
 
-        await validateAnnouncementRequest(body);
+        let broadcastMode = null;
+        let broadcastTarget = null;
+        if (action === "sendBroadcast") {
+          await verifyAccessMatrixManager(body);
+          broadcastMode = String(body.mode || "").trim();
+          const targets = await getLineFlexTargetOptions();
 
-        const target = await resolveLineTarget(body.targetId);
+          if (broadcastMode === "sandbox") {
+            broadcastTarget = LINE_FLEX_TARGETS.sandbox;
+          } else if (broadcastMode === "prd") {
+            const requestedTargetId = String(body.targetId || "").trim();
+            broadcastTarget = targets.find((target) =>
+              target.targetId === requestedTargetId &&
+              target.targetId !== LINE_FLEX_SANDBOX_TARGET_ID,
+            );
+            if (!broadcastTarget) {
+              throw new Error("Please select a production LINE group");
+            }
+          } else {
+            throw new Error("Invalid broadcast mode");
+          }
+        }
+
+        if (broadcastMode) {
+          const message = String(body.message || "");
+          const media = Array.isArray(body.media) ? body.media : [];
+          if (!message.trim() && !media.length) {
+            throw new Error("Missing message or media");
+          }
+          if (media.length > MAX_ANNOUNCEMENT_IMAGES) {
+            throw new Error(`Maximum ${MAX_ANNOUNCEMENT_IMAGES} images`);
+          }
+        } else {
+          await validateAnnouncementRequest(body);
+        }
+
+        const target = broadcastTarget ||
+          await resolveLineTarget(body.targetId);
         const targetId = target.targetId;
 
-        const announcementRef = db.collection("announcements").doc();
+        const announcementRef = db.collection(
+            broadcastMode ? LINE_BROADCASTS_COLLECTION : "announcements",
+        ).doc();
         const media = await uploadAnnouncementImages(
             announcementRef.id,
             body.media || [],
+            broadcastMode ? "line-broadcasts" : "announcements",
         );
-        const text = buildAnnouncementText(body);
+        const text = broadcastMode ?
+          String(body.message || "").slice(0, 4900) :
+          buildAnnouncementText(body);
         const messages = [
-          {type: "text", text},
           ...media.map((item) => ({
             type: "image",
             originalContentUrl: item.url,
             previewImageUrl: item.url,
           })),
+          ...(text.trim() ? [{type: "text", text}] : []),
         ];
 
         await sendLinePushMessages(targetId, messages);
@@ -7124,8 +10141,12 @@ exports.broadcastLineAnnouncement = onRequest(
           title: String(body.title || "").trim(),
           body: String(body.message || "").trim(),
           message: String(body.message || "").trim(),
-          category: String(body.category || "ทั่วไป").trim(),
-          type: String(body.category || "normal").trim(),
+          category: broadcastMode ?
+            "ข้อความโดยตรง" : String(body.category || "ทั่วไป").trim(),
+          type: broadcastMode ?
+            "direct_message" : String(body.category || "normal").trim(),
+          source: broadcastMode ? "line_broadcast" : "admin_announcement",
+          sendMode: broadcastMode,
           media,
           sentAt: admin.firestore.FieldValue.serverTimestamp(),
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -7137,10 +10158,14 @@ exports.broadcastLineAnnouncement = onRequest(
         res.status(200).json({
           ok: true,
           id: announcementRef.id,
+          targetId,
+          targetLabel: target.label || buildTargetLabel(target),
+          mode: broadcastMode,
           media,
         });
       } catch (error) {
-        const status = error.message === "Unauthorized" ? 401 : 400;
+        const status = error.status ||
+          (error.message === "Unauthorized" ? 401 : 400);
         logger.error("broadcastLineAnnouncement failed", error);
         res.status(status).json({ok: false, error: error.message});
       }
@@ -7497,9 +10522,30 @@ exports.lprEventWebhook = onRequest(
           return;
         }
 
+        // Camera clocks are not trustworthy: on 2026-07-19 the entry camera
+        // ran exactly +60 min ahead (DST/manual-time flip) and every daily
+        // report row showed exit-before-entry. When the camera timestamp is
+        // more than 10 minutes off the server clock, keep the raw value for
+        // audit but record the event at server time.
+        const nowEpoch = Date.now();
+        const clockSkewMs = nowEpoch - parsed.capturedAtEpoch;
+        if (Math.abs(clockSkewMs) > 10 * 60 * 1000) {
+          logger.warn("LPR camera clock skew — using server time", {
+            cameraId,
+            direction,
+            cameraCapturedAt: parsed.capturedAt,
+            clockSkewMinutes: Math.round(clockSkewMs / 60000),
+          });
+          parsed.cameraCapturedAt = parsed.capturedAt;
+          parsed.cameraCapturedAtEpoch = parsed.capturedAtEpoch;
+          parsed.clockSkewMs = clockSkewMs;
+          parsed.capturedAtEpoch = nowEpoch;
+          parsed.capturedAt = new Date(nowEpoch).toISOString();
+        }
+
         const eventKey = [
           cameraId,
-          parsed.capturedAt,
+          parsed.cameraCapturedAt || parsed.capturedAt,
           parsed.plate,
           parsed.picName,
         ].join("|");
@@ -7507,13 +10553,31 @@ exports.lprEventWebhook = onRequest(
             .update(eventKey)
             .digest("hex")
             .slice(0, 40);
-        await db.collection(LPR_TRAFFIC_EVENTS_COLLECTION).doc(eventId).set({
-          ...parsed,
-          cameraId,
-          direction,
-          sourceIp: req.ip || "",
-          receivedAt: admin.firestore.FieldValue.serverTimestamp(),
-        }, {merge: true});
+        const eventRef = db.collection(LPR_TRAFFIC_EVENTS_COLLECTION)
+            .doc(eventId);
+        const cameraStatusRef = db.collection(LPR_AGENT_C_STATUS_COLLECTION)
+            .doc(cameraId);
+        await db.runTransaction(async (transaction) => {
+          const existingEvent = await transaction.get(eventRef);
+          transaction.set(eventRef, {
+            ...parsed,
+            cameraId,
+            direction,
+            sourceIp: req.ip || "",
+            receivedAt: admin.firestore.FieldValue.serverTimestamp(),
+          }, {merge: true});
+          // Hikvision may retry the same deterministic event. Only advance the
+          // sequence once so retries cannot manufacture peer activity.
+          if (!existingEvent.exists) {
+            transaction.set(cameraStatusRef, {
+              cameraId,
+              lastCaptureAtEpoch: parsed.capturedAtEpoch,
+              lastEventReceivedAtEpoch: nowEpoch,
+              eventSequence: admin.firestore.FieldValue.increment(1),
+              eventHeartbeatAt: admin.firestore.FieldValue.serverTimestamp(),
+            }, {merge: true});
+          }
+        });
         logger.info("Stored LPR traffic event", {
           eventId,
           cameraId,
@@ -7568,8 +10632,27 @@ exports.dailyTrafficReport = onRequest(
       }
       try {
         const body = req.body || {};
-        await verifyAdminResidentAccess(body, "admin.audit");
         const action = String(body.action || "run");
+        if (action === "visitorBoard") {
+          // Resident-facing board for /visitorboard/ — any resident with a
+          // valid PIN (not just committee) can call this. Unlike "dailyLog"
+          // it never returns which house a resident car belongs to; it only
+          // exposes aggregate resident in/out counts plus the full external
+          // (visitor) plate list, which isn't privacy-sensitive to residents.
+          const houseNo = normalizeHouseNo(body.houseNo);
+          const pin = String(body.pin || "");
+          await verifyResidentPinInternal(houseNo, pin);
+          logFeatureUsage("visitorboard", houseNo);
+          const reportDate = String(body.reportDate || "").slice(0, 10) ||
+            getTodayBangkokDate();
+          const report = await buildDailyTrafficReport(reportDate, 0);
+          res.status(200).json({
+            ok: true,
+            report: toVisitorBoardReport(report),
+          });
+          return;
+        }
+        await verifyAdminResidentAccess(body, "admin.audit");
         if (action === "run") {
           // Optional targetId override lets admins push a test card to the
           // sandbox group (e.g. Pattra Watch) instead of the live residents
@@ -7635,6 +10718,14 @@ exports.dailyTrafficReport = onRequest(
           res.status(200).json({ok: true, report});
           return;
         }
+        if (action === "searchHouse") {
+          await verifyAdminResidentAccess(body, "admin.audit");
+          const report = await buildHouseSearchReport(
+              body.queryHouseNo || body.q || "",
+          );
+          res.status(200).json({ok: true, report});
+          return;
+        }
         if (action === "lprLabel") {
           // Save a committee reviewer's comment on one สแกนไม่พบ capture
           // (OCR training feedback). Keyed by eventId.
@@ -7668,7 +10759,7 @@ exports.dailyTrafficReport = onRequest(
 
 exports.overnightSecuritySummary = onSchedule(
     {
-      schedule: "0 7 * * *",
+      schedule: "30 7 * * *",
       timeZone: "Asia/Bangkok",
       secrets: [LINE_CHANNEL_ACCESS_TOKEN],
       memory: "512MiB",
@@ -7678,6 +10769,10 @@ exports.overnightSecuritySummary = onSchedule(
       const report = await runOvernightSecurityReport(
           getTodayBangkokDate(),
           !REPORT_PUSH_PAUSED,
+          0,
+          0,
+          7,
+          30,
       );
       logger.info("overnightSecuritySummary complete", {
         reportDate: report.reportDate,
@@ -7691,7 +10786,7 @@ exports.overnightSecuritySummary = onSchedule(
 
 exports.guardAuditDaySummary = onSchedule(
     {
-      schedule: "0 19 * * *",
+      schedule: "30 19 * * *",
       timeZone: "Asia/Bangkok",
       secrets: [LINE_CHANNEL_ACCESS_TOKEN],
       memory: "512MiB",
@@ -7702,7 +10797,9 @@ exports.guardAuditDaySummary = onSchedule(
           getTodayBangkokDate(),
           !REPORT_PUSH_PAUSED,
           7,
+          30,
           19,
+          30,
       );
       logger.info("guardAuditDaySummary complete", {
         reportDate: report.reportDate,
@@ -7717,7 +10814,7 @@ exports.guardAuditDaySummary = onSchedule(
 
 exports.guardAuditNightSummary = onSchedule(
     {
-      schedule: "0 7 * * *",
+      schedule: "30 7 * * *",
       timeZone: "Asia/Bangkok",
       secrets: [LINE_CHANNEL_ACCESS_TOKEN],
       memory: "512MiB",
@@ -7728,7 +10825,9 @@ exports.guardAuditNightSummary = onSchedule(
           getYesterdayBangkokDate(),
           !REPORT_PUSH_PAUSED,
           19,
+          30,
           7,
+          30,
       );
       logger.info("guardAuditNightSummary complete", {
         reportDate: report.reportDate,
@@ -7767,8 +10866,12 @@ exports.overnightSecurityReport = onRequest(
               body.sendLine !== false,
               Number.isFinite(Number(body.startHour)) ?
                 Number(body.startHour) : 0,
+              Number.isFinite(Number(body.startMinute)) ?
+                Number(body.startMinute) : 0,
               Number.isFinite(Number(body.endHour)) ?
                 Number(body.endHour) : 7,
+              Number.isFinite(Number(body.endMinute)) ?
+                Number(body.endMinute) : 30,
           );
           res.status(200).json({ok: true, report});
           return;
@@ -7801,8 +10904,9 @@ exports.overnightSecurityReport = onRequest(
 /**
  * Manual trigger for the Pattra Watch reports (daily or night), guarded by
  * the LPR event token. Lets us regenerate / re-push a report on demand.
- * GET/POST ?token=...&type=daily|night&date=YYYY-MM-DD&sendLine=true
- *   &startHour=0&endHour=7&targetId=<registered LINE target>
+ * GET/POST ?token=...&type=daily|night|guardAudit&date=YYYY-MM-DD&
+ *   sendLine=true&startHour=0&startMinute=0&endHour=7&endMinute=30&
+ *   targetId=<registered LINE target>
  */
 exports.lprWatchRun = onRequest(
     {
@@ -7835,7 +10939,9 @@ exports.lprWatchRun = onRequest(
               date,
               sendLine,
               Number(params.startHour || 7),
+              Number(params.startMinute || 30),
               Number(params.endHour || 19),
+              Number(params.endMinute || 30),
               targetIdOverride,
               String(params.officerName || "").trim(),
           );
@@ -7850,28 +10956,29 @@ exports.lprWatchRun = onRequest(
           return;
         }
         if (type === "paymentHeatmap") {
-          if (String(params.sandbox || "") !== "true" || !params.targetId) {
-            res.status(400).json({
-              ok: false,
-              error: "paymentHeatmap requires sandbox=true and targetId",
-            });
-            return;
-          }
           const data = await buildPaymentHeatmapData({
             feeType: params.feeType,
             period: params.period,
             year: params.year,
           });
           const message = buildPaymentHeatmapFlexMessage(data);
+          const targetId = targetIdOverride ||
+            await resolveLineFlexTargetId("pattraPay");
+          if (!targetId) {
+            res.status(400).json({
+              ok: false,
+              error: "Pattra Pay LINE group is not set",
+            });
+            return;
+          }
           if (sendLine) {
-            await sendLinePushMessages(targetIdOverride, [message]);
+            await sendLinePushMessages(targetId, [message]);
           }
           res.status(200).json({
             ok: true,
             type,
-            sandbox: true,
             sendLine,
-            targetId: maskTargetId(targetIdOverride),
+            targetId: maskTargetId(targetId),
             data,
             message: sendLine ? undefined : message,
           });
@@ -7882,7 +10989,9 @@ exports.lprWatchRun = onRequest(
           report = await runOvernightSecurityReport(
               date, sendLine,
               Number(params.startHour || 0),
+              Number(params.startMinute || 0),
               Number(params.endHour || 7),
+              Number(params.endMinute || 30),
               targetIdOverride,
           );
         } else {
@@ -8095,6 +11204,15 @@ async function runLprImageSync() {
     }
   }
   logger.info("lprImageSync done", {scanned: snap.size, saved, missed});
+  await db.doc(SYSTEM_HEALTH_CONFIG_PATH).set({
+    imageSync: {
+      lastRunAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastRunEpoch: Date.now(),
+      scanned: snap.size,
+      saved,
+      missed,
+    },
+  }, {merge: true});
   return {scanned: snap.size, saved, missed};
 }
 
@@ -8168,6 +11286,67 @@ exports.lprImageSync = onSchedule(
 );
 
 /**
+ * Retention purge for LPR capture images. Deletes Storage objects older than
+ * LPR_IMAGE_RETENTION_DAYS and clears the image fields on the event document,
+ * keeping the lightweight metadata that reports still read. Setting
+ * imageStored:false drops each purged event out of the query on the next run,
+ * and purged events sit far outside the 24h window lprImageSync scans, so they
+ * are never re-fetched.
+ * @return {Promise<{scanned: number, purged: number}>}
+ */
+async function runLprImagePurge() {
+  const cutoffEpoch = Date.now() -
+    LPR_IMAGE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  const bucket = admin.storage().bucket();
+  let scanned = 0;
+  let purged = 0;
+  // Normally trickles ~one day of captures per run; the batch loop only ever
+  // matters if a backlog builds up (e.g. the cron was paused).
+  for (let batch = 0; batch < 30; batch += 1) {
+    const snap = await db.collection(LPR_TRAFFIC_EVENTS_COLLECTION)
+        .where("imageStored", "==", true)
+        .where("capturedAtEpoch", "<=", cutoffEpoch)
+        .orderBy("capturedAtEpoch", "asc")
+        .limit(200)
+        .get();
+    if (snap.empty) break;
+    scanned += snap.size;
+    for (const docSnap of snap.docs) {
+      const event = docSnap.data() || {};
+      if (event.imagePath) {
+        await bucket.file(event.imagePath).delete({ignoreNotFound: true});
+      }
+      await docSnap.ref.set({
+        imagePath: admin.firestore.FieldValue.delete(),
+        imageToken: admin.firestore.FieldValue.delete(),
+        imageStored: false,
+        imagePurged: true,
+        imagePurgedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+      purged += 1;
+    }
+    if (snap.size < 200) break;
+  }
+  logger.info("lprImagePurge done", {scanned, purged});
+  return {scanned, purged};
+}
+
+/**
+ * Retention cron — deletes LPR capture images older than 90 days.
+ */
+exports.lprImageCleanup = onSchedule(
+    {
+      schedule: "every day 03:40",
+      timeZone: "Asia/Bangkok",
+      memory: "512MiB",
+      timeoutSeconds: 300,
+    },
+    async () => {
+      await runLprImagePurge();
+    },
+);
+
+/**
  * Agent A vision enrichment. Runs only when image sync first links a capture,
  * skips resident vehicles, and reuses the cached profile for repeat plates.
  */
@@ -8215,7 +11394,11 @@ exports.lprVehicleVision = onDocumentUpdated(
 async function sendAgentCShadowAlert(fingerprint, severity, message) {
   const configSnap = await db.doc(LPR_AGENT_C_CONFIG_PATH).get();
   const config = configSnap.exists ? configSnap.data() || {} : {};
-  if (config.enabled !== true || config.shadowMode !== true ||
+  // Either switch opens the alert channel: the backlog monitor has to be able
+  // to speak up while the Gemini audit half is off.
+  const gateOpen = config.enabled === true ||
+    config.backlogMonitorEnabled === true;
+  if (!gateOpen || config.shadowMode !== true ||
       config.testTargetId !== LPR_AGENT_C_TEST_TARGET_ID) {
     return false;
   }
@@ -8258,26 +11441,22 @@ async function sendAgentCShadowAlert(fingerprint, severity, message) {
  * @return {Promise<Object>}
  */
 async function runAgentCHealthProbe() {
-  const since = Date.now() - 24 * 60 * 60 * 1000;
-  const eventSnap = await db.collection(LPR_TRAFFIC_EVENTS_COLLECTION)
-      .where("capturedAtEpoch", ">=", since)
-      .get();
-  const latestByCamera = {};
-  const latestReceivedByCamera = {};
-  eventSnap.docs.forEach((docSnap) => {
-    const item = docSnap.data() || {};
-    const cameraId = String(item.cameraId || "");
-    const receivedEpoch = item.receivedAt && item.receivedAt.toMillis ?
-      item.receivedAt.toMillis() : 0;
-    latestByCamera[cameraId] = Math.max(
-        latestByCamera[cameraId] || 0,
-        Number(item.capturedAtEpoch || 0),
-    );
-    latestReceivedByCamera[cameraId] = Math.max(
-        latestReceivedByCamera[cameraId] || 0,
-        receivedEpoch,
-    );
-  });
+  const nowEpoch = Date.now();
+  const cameraStatusRefs = ["8241", "8242", "nvr"].map((cameraId) =>
+    db.collection(LPR_AGENT_C_STATUS_COLLECTION).doc(cameraId));
+  const cameraStatusSnaps = await db.getAll(...cameraStatusRefs);
+  const previousByCamera = Object.fromEntries(cameraStatusSnaps.map((snap) => [
+    snap.id,
+    snap.exists ? snap.data() || {} : {},
+  ]));
+  const latestByCamera = Object.fromEntries(["8241", "8242"].map(
+      (cameraId) => [cameraId,
+        Number(previousByCamera[cameraId].lastCaptureAtEpoch || 0)],
+  ));
+  const latestReceivedByCamera = Object.fromEntries(["8241", "8242"].map(
+      (cameraId) => [cameraId,
+        Number(previousByCamera[cameraId].lastEventReceivedAtEpoch || 0)],
+  ));
   const probes = [];
   for (const cameraBase of LPR_CAMERAS) {
     const cameraId = (cameraBase.match(/:(\d+)$/) || [])[1] || cameraBase;
@@ -8341,15 +11520,49 @@ async function runAgentCHealthProbe() {
   for (const probe of probes) {
     const ref = db.collection(LPR_AGENT_C_STATUS_COLLECTION)
         .doc(probe.cameraId);
-    const previousSnap = await ref.get();
-    const previous = previousSnap.exists ? previousSnap.data() || {} : {};
+    const previous = previousByCamera[probe.cameraId] || {};
     const failures = probe.ok ? 0 :
       Number(previous.consecutiveFailures || 0) + 1;
+    const peerCameraId = probe.cameraId === "8241" ? "8242" :
+      probe.cameraId === "8242" ? "8241" : "";
+    const lastEventEpoch = Number(probe.lastCaptureAtEpoch || 0);
+    const peerEventSequence = peerCameraId ?
+      Number(previousByCamera[peerCameraId].eventSequence || 0) : 0;
+    const peerEventsSince = peerCameraId ? accumulatePeerEvents({
+      lastEventEpoch,
+      observedLastEventEpoch: previous.observedLastEventEpoch,
+      peerEventSequence,
+      observedPeerEventSequence: previous.observedPeerEventSequence,
+      previousPeerEvents: previous.peerEventsWhileStale,
+    }) : 0;
+    const eventStatus = peerCameraId && probe.ok ? anprEventStatus({
+      nowEpoch,
+      lastEventEpoch,
+      peerLastEventEpoch: latestByCamera[peerCameraId],
+      peerEventsSince,
+    }) : "unknown";
+    const eventStale = eventStatus === "warning" || eventStatus === "offline";
+    const consecutiveEventStale = eventStale ?
+      Number(previous.consecutiveEventStale || 0) + 1 : 0;
     const severity = failures >= 3 ? "critical" :
       failures >= 2 ? "warning" : "healthy";
     await ref.set({
-      ...probe,
+      cameraId: probe.cameraId,
+      ok: probe.ok,
+      statusCode: probe.statusCode,
+      error: probe.error || "",
+      captureOk: probe.cameraId === "nvr" ? null : probe.captureOk === true,
+      captureBytes: Number(probe.captureBytes || 0),
+      captureError: probe.captureError || "",
+      latencyMs: probe.latencyMs,
       consecutiveFailures: failures,
+      eventStatus,
+      peerCameraId: peerCameraId || null,
+      peerEventsSince,
+      peerEventsWhileStale: peerEventsSince,
+      observedLastEventEpoch: lastEventEpoch,
+      observedPeerEventSequence: peerEventSequence,
+      consecutiveEventStale,
       severity,
       lastProbeAt: admin.firestore.FieldValue.serverTimestamp(),
       ...(probe.ok ? {
@@ -8370,9 +11583,502 @@ async function runAgentCHealthProbe() {
           `${probe.cameraId} กลับมาออนไลน์แล้ว`,
       );
     }
+    if (eventStale && consecutiveEventStale >= 3) {
+      const staleMinutes = Math.floor((nowEpoch - lastEventEpoch) / 60000);
+      await sendAgentCShadowAlert(
+          `anpr-stale-${probe.cameraId}`,
+          eventStatus === "offline" ? "CRITICAL" : "WARNING",
+          `${probe.cameraId} ANPR event เงียบ ${staleMinutes} นาที ` +
+          `แต่ ${peerCameraId} มี ${peerEventsSince} events ระหว่างนั้น`,
+      );
+    }
+    if (eventStatus === "online" &&
+        lastEventEpoch > Number(previous.observedLastEventEpoch || 0) &&
+        Number(previous.consecutiveEventStale || 0) >= 3) {
+      await sendAgentCShadowAlert(
+          `anpr-recovered-${probe.cameraId}`,
+          "RECOVERED",
+          `${probe.cameraId} กลับมาส่ง ANPR event แล้ว`,
+      );
+    }
   }
   return {probes};
 }
+
+/**
+ * Converts Firestore timestamps and epoch-like values to milliseconds.
+ * @param {*} value
+ * @return {number}
+ */
+function systemHealthEpoch(value) {
+  if (value && typeof value.toMillis === "function") return value.toMillis();
+  const numberValue = Number(value || 0);
+  return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
+/**
+ * Checks LINE's public incident feed and this OA's read-only API health.
+ * @return {Promise<Object>}
+ */
+async function probeLineMessagingHealth() {
+  const checkedEpoch = Date.now();
+  const headers = {
+    "Authorization": `Bearer ${LINE_CHANNEL_ACCESS_TOKEN.value()}`,
+  };
+  const requestOptions = {headers, signal: AbortSignal.timeout(6000)};
+  const [statusResult, botResult, webhookResult] = await Promise.allSettled([
+    fetch(
+        "https://jncpmz37bpzt.statuspage.io/api/v2/incidents/unresolved.json",
+        {signal: AbortSignal.timeout(6000)},
+    ),
+    fetch("https://api.line.me/v2/bot/info", requestOptions),
+    fetch(
+        "https://api.line.me/v2/bot/channel/webhook/endpoint",
+        requestOptions,
+    ),
+  ]);
+
+  let statusPageOk = false;
+  let incident = null;
+  if (statusResult.status === "fulfilled" && statusResult.value.ok) {
+    statusPageOk = true;
+    const payload = await statusResult.value.json().catch(() => ({}));
+    const incidents = Array.isArray(payload.incidents) ?
+      payload.incidents : [];
+    const current = incidents.find((item) =>
+      /messaging\s*api/i.test(String(item && item.name || "")),
+    );
+    if (current) {
+      incident = {
+        name: String(current.name || "LINE Messaging API incident"),
+        status: String(current.status || "investigating"),
+        impact: String(current.impact || ""),
+        updatedAt: String(current.updated_at || ""),
+        url: String(current.shortlink || current.url ||
+          "https://api.line-status.info/"),
+      };
+    }
+  }
+
+  const botApiOk = botResult.status === "fulfilled" && botResult.value.ok;
+  const webhookApiOk = webhookResult.status === "fulfilled" &&
+    webhookResult.value.ok;
+  let webhookActive = false;
+  if (webhookApiOk) {
+    const webhook = await webhookResult.value.json().catch(() => ({}));
+    webhookActive = webhook.active === true;
+  }
+  const status = lineMessagingStatus({
+    hasIncident: Boolean(incident && incident.status !== "monitoring"),
+    isMonitoring: Boolean(incident && incident.status === "monitoring"),
+    statusPageOk,
+    botApiOk,
+    webhookApiOk,
+    webhookActive,
+  });
+
+  return {
+    status,
+    ok: status === "online",
+    checkedEpoch,
+    latencyMs: Date.now() - checkedEpoch,
+    statusPageOk,
+    botApiOk,
+    webhookApiOk,
+    webhookActive,
+    incident,
+  };
+}
+
+/**
+ * Runs the read-only infrastructure probes and persists a safe status snapshot.
+ * @return {Promise<Object>}
+ */
+async function runSystemHealthProbe() {
+  const startedEpoch = Date.now();
+  const [health, lineMessaging] = await Promise.all([
+    runAgentCHealthProbe(),
+    probeLineMessagingHealth(),
+  ]);
+  const statusRefs = health.probes.map((probe) =>
+    db.collection(LPR_AGENT_C_STATUS_COLLECTION).doc(probe.cameraId),
+  );
+  const statusSnaps = statusRefs.length ? await db.getAll(...statusRefs) : [];
+  const statusById = Object.fromEntries(statusSnaps.map((snap) => [
+    snap.id,
+    snap.exists ? snap.data() || {} : {},
+  ]));
+  const cameras = {};
+  health.probes.forEach((probe) => {
+    const saved = statusById[probe.cameraId] || {};
+    const physicalStatus = probeStatus(
+        probe.ok === true, saved.consecutiveFailures,
+    );
+    const eventStatus = saved.eventStatus || "unknown";
+    const status = physicalStatus === "online" &&
+      (eventStatus === "warning" || eventStatus === "offline") ?
+      eventStatus : physicalStatus;
+    cameras[probe.cameraId] = {
+      cameraId: probe.cameraId,
+      ok: probe.ok === true,
+      status,
+      apiOk: probe.statusCode === 200,
+      snapshotOk: probe.cameraId === "nvr" ? null :
+        probe.captureOk === true,
+      snapshotBytes: Number(probe.captureBytes || 0),
+      latencyMs: Number(probe.latencyMs || 0),
+      consecutiveFailures: Number(saved.consecutiveFailures || 0),
+      eventStatus,
+      consecutiveEventStale: Number(saved.consecutiveEventStale || 0),
+      peerEventsSince: Number(saved.peerEventsSince || 0),
+      lastAnprEventEpoch: Number(probe.lastCaptureAtEpoch || 0),
+      lastEventReceivedEpoch: Number(probe.lastEventReceivedAtEpoch || 0),
+      checkedEpoch: startedEpoch,
+    };
+  });
+
+  let storage = {status: "online", ok: true, checkedEpoch: startedEpoch};
+  try {
+    await admin.storage().bucket().getMetadata();
+  } catch (error) {
+    storage = {
+      status: "offline",
+      ok: false,
+      checkedEpoch: startedEpoch,
+      message: "Storage probe failed",
+    };
+  }
+
+  await db.doc(SYSTEM_HEALTH_CONFIG_PATH).set({
+    cameras,
+    lineMessaging,
+    storage,
+    firestore: {
+      status: "online",
+      ok: true,
+      checkedEpoch: startedEpoch,
+    },
+    lastProbeAt: admin.firestore.FieldValue.serverTimestamp(),
+    lastProbeEpoch: startedEpoch,
+  }, {merge: true});
+
+  for (const cameraId of ["8241", "8242"]) {
+    const rebootRef = db.collection(SYSTEM_HEALTH_REBOOTS_COLLECTION)
+        .doc(cameraId);
+    const rebootSnap = await rebootRef.get();
+    const reboot = rebootSnap.exists ? rebootSnap.data() || {} : {};
+    const requestedEpoch = systemHealthEpoch(reboot.requestedEpoch);
+    const camera = cameras[cameraId];
+    if (reboot.status === "rebooting" && camera && camera.ok &&
+        startedEpoch > requestedEpoch + 15000) {
+      await rebootRef.set({
+        status: "completed",
+        completedAt: admin.firestore.FieldValue.serverTimestamp(),
+        completedEpoch: startedEpoch,
+      }, {merge: true});
+    }
+  }
+
+  return {cameras, lineMessaging, storage, checkedEpoch: startedEpoch};
+}
+
+/**
+ * Produces the president-facing status payload without secrets or raw errors.
+ * @return {Promise<Object>}
+ */
+async function buildSystemHealthSummary() {
+  const [stateSnap, rebootSnaps, dailySnap, nightSnap] = await Promise.all([
+    db.doc(SYSTEM_HEALTH_CONFIG_PATH).get(),
+    db.getAll(
+        db.collection(SYSTEM_HEALTH_REBOOTS_COLLECTION).doc("8241"),
+        db.collection(SYSTEM_HEALTH_REBOOTS_COLLECTION).doc("8242"),
+    ),
+    db.collection(LPR_DAILY_TRAFFIC_COLLECTION)
+        .orderBy("reportDate", "desc").limit(1).get(),
+    db.collection(LPR_OVERNIGHT_COLLECTION)
+        .orderBy("reportDate", "desc").limit(1).get(),
+  ]);
+  const now = Date.now();
+  const state = stateSnap.exists ? stateSnap.data() || {} : {};
+  const rebootById = Object.fromEntries(rebootSnaps.map((snap) => [
+    snap.id,
+    snap.exists ? snap.data() || {} : {},
+  ]));
+  const cameraLabels = {
+    "8241": "กล้องขาเข้า",
+    "8242": "กล้องขาออก",
+  };
+  const cameras = ["8241", "8242"].map((cameraId) => {
+    const camera = state.cameras && state.cameras[cameraId] || {};
+    const reboot = rebootById[cameraId] || {};
+    const requestedEpoch = systemHealthEpoch(reboot.requestedEpoch);
+    const rebootRecent = reboot.status === "rebooting" &&
+      requestedEpoch > now - 5 * 60 * 1000;
+    return {
+      cameraId,
+      label: cameraLabels[cameraId],
+      status: rebootRecent ? "rebooting" : camera.status || "unknown",
+      apiOk: camera.apiOk === true,
+      snapshotOk: camera.snapshotOk === true,
+      snapshotBytes: Number(camera.snapshotBytes || 0),
+      latencyMs: Number(camera.latencyMs || 0),
+      eventStatus: camera.eventStatus || "unknown",
+      consecutiveEventStale: Number(camera.consecutiveEventStale || 0),
+      peerEventsSince: Number(camera.peerEventsSince || 0),
+      lastAnprEventEpoch: Number(camera.lastAnprEventEpoch || 0),
+      lastEventReceivedEpoch: Number(camera.lastEventReceivedEpoch || 0),
+      checkedEpoch: Number(camera.checkedEpoch || 0),
+      reboot: {
+        status: reboot.status || "idle",
+        requestedEpoch,
+        completedEpoch: systemHealthEpoch(reboot.completedEpoch),
+      },
+    };
+  });
+  const imageSync = state.imageSync || {};
+  const imageSyncStatus = heartbeatStatus(
+      imageSync.lastRunEpoch,
+      now,
+      22 * 60 * 1000,
+      40 * 60 * 1000,
+  );
+  const daily = dailySnap.empty ? {} : dailySnap.docs[0].data() || {};
+  const night = nightSnap.empty ? {} : nightSnap.docs[0].data() || {};
+  const nvr = state.cameras && state.cameras.nvr || {};
+  const lineMessaging = state.lineMessaging || {};
+  const lineIncident = lineMessaging.incident || null;
+  const components = [
+    {
+      id: "lineMessaging",
+      label: "LINE Messaging API",
+      status: lineMessaging.status || "unknown",
+      detail: lineIncident && lineIncident.name ?
+        `LINE incident: ${lineIncident.name}` :
+        lineMessaging.status === "online" ?
+          "OA API และ Webhook พร้อมใช้งาน" :
+          "LINE API, Webhook หรือหน้า Status ตอบผิดปกติ",
+      checkedEpoch: Number(lineMessaging.checkedEpoch || 0),
+      statusUrl: lineIncident && lineIncident.url ||
+        "https://api.line-status.info/",
+      external: true,
+    },
+    {
+      id: "nvr",
+      label: "NVR Recording",
+      status: nvr.status || "unknown",
+      detail: nvr.ok ? "เชื่อมต่อเครื่องบันทึกได้" : "รอตรวจสอบเครื่องบันทึก",
+      checkedEpoch: Number(nvr.checkedEpoch || 0),
+    },
+    {
+      id: "imageSync",
+      label: "LPR Image Sync",
+      status: Number(imageSync.missed || 0) > 0 ? "warning" :
+        imageSyncStatus,
+      detail: `รอบล่าสุด บันทึก ${Number(imageSync.saved || 0)} · ` +
+        `พลาด ${Number(imageSync.missed || 0)}`,
+      checkedEpoch: Number(imageSync.lastRunEpoch || 0),
+    },
+    {
+      id: "firestore",
+      label: "Firestore",
+      status: state.firestore && state.firestore.status || "unknown",
+      detail: "ฐานข้อมูลสถานะและ LPR events",
+      checkedEpoch: Number(state.firestore &&
+        state.firestore.checkedEpoch || 0),
+    },
+    {
+      id: "storage",
+      label: "Firebase Storage",
+      status: state.storage && state.storage.status || "unknown",
+      detail: "พื้นที่จัดเก็บภาพรถและเอกสาร",
+      checkedEpoch: Number(state.storage && state.storage.checkedEpoch || 0),
+    },
+    {
+      id: "dailyReport",
+      label: "Daily Watch Report",
+      status: daily.lineSent === true ? "online" :
+        daily.lineError ? "warning" : "unknown",
+      detail: daily.reportDate ? `รายงานล่าสุด ${daily.reportDate}` :
+        "ยังไม่มีข้อมูลรายงาน",
+      checkedEpoch: systemHealthEpoch(daily.updatedAt),
+    },
+    {
+      id: "nightReport",
+      label: "Night Watch Report",
+      status: night.lineSent === true ? "online" :
+        night.lineError ? "warning" : "unknown",
+      detail: night.reportDate ? `รายงานล่าสุด ${night.reportDate}` :
+        "ยังไม่มีข้อมูลรายงาน",
+      checkedEpoch: systemHealthEpoch(night.updatedAt),
+    },
+  ];
+  const healthStatuses = [
+    ...cameras.map((camera) => camera.status === "rebooting" ?
+      "warning" : camera.status),
+    ...components.filter((component) => [
+      "lineMessaging",
+      "nvr",
+      "imageSync",
+      "firestore",
+      "storage",
+    ].includes(component.id)).map((component) => component.status),
+  ];
+  return {
+    generatedEpoch: now,
+    lastProbeEpoch: Number(state.lastProbeEpoch || 0),
+    overallStatus: overallStatus(healthStatuses),
+    cameras,
+    components,
+  };
+}
+
+/**
+ * Verifies the authenticated account is the primary president account.
+ * @param {Object} body
+ * @return {Promise<Object>}
+ */
+async function verifySystemHealthPresident(body) {
+  const access = await verifyAdminResidentAccess(body, "admin.portal");
+  if (access.houseNo !== "38/8") {
+    const error = new Error("Unauthorized");
+    error.status = 403;
+    throw error;
+  }
+  return access;
+}
+
+/**
+ * Reboots one allowlisted ANPR camera with a five-minute cooldown.
+ * @param {string} cameraId
+ * @param {string} houseNo
+ * @return {Promise<Object>}
+ */
+async function rebootSystemHealthCamera(cameraId, houseNo) {
+  const cameraBases = {"8241": LPR_CAMERAS[0], "8242": LPR_CAMERAS[1]};
+  const cameraBase = cameraBases[cameraId];
+  if (!cameraBase) {
+    const error = new Error("Camera is not allowlisted");
+    error.status = 400;
+    throw error;
+  }
+  const now = Date.now();
+  const rebootRef = db.collection(SYSTEM_HEALTH_REBOOTS_COLLECTION)
+      .doc(cameraId);
+  await db.runTransaction(async (transaction) => {
+    const snap = await transaction.get(rebootRef);
+    const previous = snap.exists ? snap.data() || {} : {};
+    const previousEpoch = systemHealthEpoch(previous.requestedEpoch);
+    if (previousEpoch > now - 5 * 60 * 1000) {
+      const error = new Error("Camera reboot cooldown is active");
+      error.status = 429;
+      throw error;
+    }
+    transaction.set(rebootRef, {
+      cameraId,
+      status: "rebooting",
+      requestedBy: houseNo,
+      requestedAt: admin.firestore.FieldValue.serverTimestamp(),
+      requestedEpoch: now,
+    }, {merge: true});
+  });
+
+  try {
+    const result = await hikvisionFetch(
+        cameraBase,
+        "/ISAPI/System/reboot",
+        {method: "PUT"},
+    );
+    if (result.status !== 200 || !/<statusCode>1<\/statusCode>/.test(
+        result.text || "")) {
+      throw new Error(`Camera rejected reboot (${result.status})`);
+    }
+    writeAuditLog("system_health_camera_reboot", houseNo, {cameraId});
+    return {cameraId, status: "rebooting", requestedEpoch: now};
+  } catch (error) {
+    await rebootRef.set({
+      status: "failed",
+      failedAt: admin.firestore.FieldValue.serverTimestamp(),
+      failedEpoch: Date.now(),
+    }, {merge: true});
+    writeAuditLog("system_health_camera_reboot", houseNo, {
+      cameraId,
+      reason: String(error.message || error).slice(0, 160),
+    }, false);
+    throw error;
+  }
+}
+
+exports.systemHealthProbe = onSchedule(
+    {
+      schedule: "every 2 minutes",
+      timeZone: "Asia/Bangkok",
+      secrets: [LPR_ADMIN_PASSWORD, LPR_NVR_PASSWORD,
+        LINE_CHANNEL_ACCESS_TOKEN],
+      memory: "512MiB",
+      timeoutSeconds: 90,
+    },
+    async () => {
+      const result = await runSystemHealthProbe();
+      logger.info("systemHealthProbe complete", {
+        checkedEpoch: result.checkedEpoch,
+        camera8241: result.cameras["8241"] &&
+          result.cameras["8241"].status,
+        camera8242: result.cameras["8242"] &&
+          result.cameras["8242"].status,
+      });
+    },
+);
+
+exports.systemHealthAdmin = onRequest(
+    {
+      secrets: [LPR_ADMIN_PASSWORD, LPR_NVR_PASSWORD,
+        LINE_CHANNEL_ACCESS_TOKEN],
+      memory: "512MiB",
+      timeoutSeconds: 120,
+    },
+    async (req, res) => {
+      setCorsHeaders(req, res);
+      if (req.method === "OPTIONS") {
+        res.status(204).send("");
+        return;
+      }
+      if (req.method !== "POST") {
+        res.status(405).json({ok: false, error: "Method Not Allowed"});
+        return;
+      }
+      try {
+        const body = req.body || {};
+        const access = await verifySystemHealthPresident(body);
+        const action = String(body.action || "summary").trim();
+        if (action === "probe") {
+          await runSystemHealthProbe();
+        } else if (action === "reboot") {
+          if (String(body.confirm || "") !== "REBOOT") {
+            res.status(400).json({ok: false, error: "Confirmation required"});
+            return;
+          }
+          const reboot = await rebootSystemHealthCamera(
+              String(body.cameraId || ""), access.houseNo,
+          );
+          res.status(202).json({ok: true, reboot});
+          return;
+        } else if (action !== "summary") {
+          res.status(400).json({ok: false, error: "Invalid action"});
+          return;
+        }
+        res.status(200).json({
+          ok: true,
+          summary: await buildSystemHealthSummary(),
+        });
+      } catch (error) {
+        logger.error("systemHealthAdmin failed", error);
+        res.status(error.status || 500).json({
+          ok: false,
+          error: String(error.message || error),
+        });
+      }
+    },
+);
 
 /**
  * Agent C ad-hoc runner. No timer — Agent C only runs when this endpoint is
@@ -8437,13 +12143,15 @@ exports.lprAgentCEventAudit = onDocumentUpdated(
         (!before.imagePath || before.imagePath !== after.imagePath);
       if (!imageJustLinked) return;
       try {
-        const [configSnap, expected] = await Promise.all([
-          db.doc(LPR_AGENT_C_CONFIG_PATH).get(),
-          buildExpectedLprState(),
-        ]);
+        // The flag is checked before the resident scan, not alongside it:
+        // buildExpectedLprState() reads the whole residents collection, and
+        // running it in parallel meant every traffic event paid for that scan
+        // even while Agent C was switched off.
+        const configSnap = await db.doc(LPR_AGENT_C_CONFIG_PATH).get();
         const config = configSnap.exists ? configSnap.data() || {} : {};
-        if (config.enabled !== true || !shouldAgentCAudit(
-            after, new Set(expected.plates))) {
+        if (config.enabled !== true) return;
+        const expected = await buildExpectedLprState();
+        if (!shouldAgentCAudit(after, new Set(expected.plates))) {
           return;
         }
         const audit = await runAgentCEventAudit(event.data.after);
@@ -8474,15 +12182,23 @@ exports.lprAgentCEventAudit = onDocumentUpdated(
 async function runAgentCFreshnessAudit() {
   const now = Date.now();
   const since = now - 24 * 60 * 60 * 1000;
-  const [snap, configSnap, expected] = await Promise.all([
+  // Two independent switches. `backlogMonitorEnabled` covers the image-backlog
+  // scan, which is plain Firestore work and safe to leave on; `enabled` gates
+  // only the Gemini audit backfill below. They used to share one flag, so
+  // switching off the vision spend also switched off backlog alerting.
+  const configSnap = await db.doc(LPR_AGENT_C_CONFIG_PATH).get();
+  const config = configSnap.exists ? configSnap.data() || {} : {};
+  const visionEnabled = config.enabled === true;
+  const backlogEnabled = config.backlogMonitorEnabled === true || visionEnabled;
+  if (!backlogEnabled) {
+    return {enabled: false, backlogMonitorEnabled: false};
+  }
+  const [snap, expected] = await Promise.all([
     db.collection(LPR_TRAFFIC_EVENTS_COLLECTION)
         .where("capturedAtEpoch", ">=", since)
         .get(),
-    db.doc(LPR_AGENT_C_CONFIG_PATH).get(),
     buildExpectedLprState(),
   ]);
-  const config = configSnap.exists ? configSnap.data() || {} : {};
-  if (config.enabled !== true) return {enabled: false};
   const residentSet = new Set(expected.plates);
   const readable = snap.docs.filter((docSnap) =>
     isReadableLprEvent(docSnap.data() || {}),
@@ -8492,7 +12208,7 @@ async function runAgentCFreshnessAudit() {
     return !item.imagePath && Number(item.capturedAtEpoch || now) <
       now - 30 * 60 * 1000;
   });
-  const withImages = readable.filter((docSnap) => {
+  const withImages = !visionEnabled ? [] : readable.filter((docSnap) => {
     const item = docSnap.data() || {};
     return Boolean(item.imagePath) && shouldAgentCAudit(item, residentSet);
   });
@@ -8514,9 +12230,10 @@ async function runAgentCFreshnessAudit() {
   }
   const date = getTodayBangkokDate();
   const dayRange = getTrafficDayRange(date);
-  const dayAuditSnap = await db.collection(LPR_AGENT_C_AUDITS_COLLECTION)
-      .where("capturedAtEpoch", ">=", dayRange.startEpoch)
-      .get();
+  const dayAuditSnap = !visionEnabled ? {docs: [], size: 0} :
+    await db.collection(LPR_AGENT_C_AUDITS_COLLECTION)
+        .where("capturedAtEpoch", ">=", dayRange.startEpoch)
+        .get();
   const verdicts = {pass: 0, image_mismatch: 0, unverifiable: 0};
   dayAuditSnap.docs.forEach((docSnap) => {
     const verdict = String((docSnap.data() || {}).verdict || "");
@@ -8676,26 +12393,46 @@ async function runAgentCReportAudit(type, reportDate) {
   return audit;
 }
 
+// Kill switch for the retired public/private issue boards. Never turn this on
+// again without re-reading the anonymity note in domains/issues/README.md.
+const LEGACY_ISSUE_LINE_NOTIFY_ENABLED = false;
+
 /**
  * Creates a Firestore trigger that sends LINE alerts.
  * @param {string} collectionPath
  * @param {string} issueType
+ * @param {Function} [resolveTargetId]
  * @return {*}
  */
-function createIssueNotifier(collectionPath, issueType) {
+function createIssueNotifier(collectionPath, issueType, resolveTargetId) {
   return onDocumentCreated(
       {
         document: `${collectionPath}/{issueId}`,
         secrets: [LINE_CHANNEL_ACCESS_TOKEN],
       },
       async (event) => {
+        // The old open issue board was retired in favour of `estate_issues`
+        // (see domains/issues/README.md). These two exports stay declared so
+        // the deployed export surface does not change, but they must never
+        // push again: the committee asked for reports to be readable only in
+        // the backend, and the legacy documents carried house numbers that
+        // would now leak an anonymous report into a chat room. The source
+        // collections are emptied by the archive migration, so this guard is
+        // the second lock, not the only one.
+        if (!LEGACY_ISSUE_LINE_NOTIFY_ENABLED) {
+          logger.info("Legacy issue LINE notification disabled", {
+            collectionPath,
+          });
+          return;
+        }
+
         const snap = event.data;
         if (!snap) {
           logger.warn("No snapshot data for LINE notification");
           return;
         }
 
-        const targetId = await getLineTargetId();
+        const targetId = await (resolveTargetId || getLineTargetId)();
         if (!targetId) {
           logger.warn("LINE target not configured yet");
           return;
@@ -8717,6 +12454,7 @@ function createIssueNotifier(collectionPath, issueType) {
 exports.notifyLinePublicIssue = createIssueNotifier(
     "issues",
     "มีรายการแจ้งปัญหาใหม่",
+    getReportIssueTargetId,
 );
 exports.notifyLinePrivateIssue = createIssueNotifier(
     "private_issues",
@@ -8753,7 +12491,15 @@ exports.getResidentData = onRequest(
           return;
         }
         const r = snap.data() || {};
-        writeAuditLog("view", houseNo, {ip: req.ip});
+        // Shared by several pages (/data/, /vehicle/, a fresh login on
+        // /myvisitor/, /myreceipt/, /visitorboard/, /parking/, ...) — an
+        // explicit `feature` lets the page that actually shows this data as
+        // its main content (not just a one-time login step) get its own
+        // usage badge instead of everything collapsing into "data".
+        const rawFeature = String(body.feature || "");
+        const dataFeature = FEATURE_USAGE_FEATURES.has(rawFeature) ?
+          rawFeature : "data";
+        logFeatureUsage(dataFeature, houseNo);
         res.status(200).json({ok: true, resident: {
           house_no: r.house_no || houseNo,
           name: r.name || "",
@@ -8767,6 +12513,7 @@ exports.getResidentData = onRequest(
           car_quota: parseCarQuota(r.car_quota),
           carQuota: getCarQuota(houseNo, r),
           last_updated: r.last_updated || "",
+          vehicle_updated_at: r.vehicle_updated_at || {},
         }});
       } catch (err) {
         logger.error("getResidentData failed", err);
@@ -8852,7 +12599,56 @@ exports.updateResidentData = onRequest(
           return;
         }
 
-        patch.last_updated = new Date().toISOString();
+        const requestUpdatedAt = new Date().toISOString();
+        const vehicleChange = body.vehicleChange || {};
+        const vehicleType = vehicleChange.type === "car" ? "car" :
+          vehicleChange.type === "moto" ? "moto" : "";
+        const vehicleAction = ["add", "edit", "delete"].includes(
+            vehicleChange.action,
+        ) ? vehicleChange.action : "";
+        const vehicleOriginal = normalizePlateArray([
+          vehicleChange.originalPlate,
+        ])[0] || "";
+        const vehiclePlate = normalizePlateArray([
+          vehicleChange.plate,
+        ])[0] || "";
+        const vehicleListTouched = vehicleType === "car" ? touchesCars :
+          vehicleType === "moto" ? touchesMotorcycles : false;
+        const oldVehicleList = vehicleType === "car" ?
+          normalizePlateArray(oldData.cars) :
+          normalizePlateArray(oldData.motorcycles);
+        const nextVehicleList = vehicleType === "car" ?
+          normalizePlateArray(patch.cars) :
+          normalizePlateArray(patch.motorcycles);
+        const timestamps = residentVehicleUpdatedAt(oldData);
+        let vehicleTimestampChanged = false;
+        if (vehicleListTouched && vehicleAction === "add" && vehiclePlate &&
+            nextVehicleList.includes(vehiclePlate) &&
+            !oldVehicleList.includes(vehiclePlate)) {
+          timestamps[vehicleUpdatedAtKey(vehicleType, vehiclePlate)] =
+            requestUpdatedAt;
+          vehicleTimestampChanged = true;
+        } else if (vehicleListTouched && vehicleAction === "edit" &&
+            vehicleOriginal && vehiclePlate &&
+            oldVehicleList.includes(vehicleOriginal) &&
+            nextVehicleList.includes(vehiclePlate) &&
+            (vehicleOriginal === vehiclePlate ||
+              !nextVehicleList.includes(vehicleOriginal))) {
+          delete timestamps[vehicleUpdatedAtKey(vehicleType, vehicleOriginal)];
+          timestamps[vehicleUpdatedAtKey(vehicleType, vehiclePlate)] =
+            requestUpdatedAt;
+          vehicleTimestampChanged = true;
+        } else if (vehicleListTouched && vehicleAction === "delete" &&
+            vehicleOriginal && oldVehicleList.includes(vehicleOriginal) &&
+            !nextVehicleList.includes(vehicleOriginal)) {
+          delete timestamps[vehicleUpdatedAtKey(vehicleType, vehicleOriginal)];
+          vehicleTimestampChanged = true;
+        }
+        if (vehicleTimestampChanged) {
+          patch.vehicle_updated_at = timestamps;
+        }
+
+        patch.last_updated = requestUpdatedAt;
         patch.updatedAt = admin.firestore.FieldValue.serverTimestamp();
         patch.updatedBy = "resident";
         patch.updatedByIp = req.ip || "";
@@ -8860,10 +12656,14 @@ exports.updateResidentData = onRequest(
         const changedFields = Object.keys(patch)
             .filter((key) => ![
               "last_updated",
+              "vehicle_updated_at",
               "updatedAt",
               "updatedBy",
               "updatedByIp",
-            ].includes(key));
+            ].includes(key))
+            .filter((key) => !residentAuditValuesEqual(
+                key, oldData[key], patch[key],
+            ));
         let lprSync = null;
         if (touchesCars) {
           await docRef.set(patch, {merge: true});
@@ -8928,6 +12728,8 @@ exports.updateResidentData = onRequest(
           updated: changedFields,
           lprPending: lprSync ? !lprSync.ok : false,
           lprSync,
+          vehicleUpdatedAt: patch.vehicle_updated_at ||
+            oldData.vehicle_updated_at || {},
         });
       } catch (err) {
         logger.error("updateResidentData failed", err);
@@ -9725,15 +13527,7 @@ const VALID_WORKSHOPS = new Set([
 ]);
 
 exports.getLifestyleSurvey = onRequest(async (req, res) => {
-  setCorsHeaders(req, res);
-  if (req.method === "OPTIONS") {
-    res.status(204).send("");
-    return;
-  }
-  if (req.method !== "POST") {
-    res.status(405).json({ok: false, error: "Method Not Allowed"});
-    return;
-  }
+  if (!prepareJsonRequest(req, res)) return;
   try {
     const body = req.body || {};
     const houseNo = normalizeHouseNo(body.houseNo);
@@ -9752,20 +13546,12 @@ exports.getLifestyleSurvey = onRequest(async (req, res) => {
     });
   } catch (err) {
     logger.error("getLifestyleSurvey failed", err);
-    res.status(err.status || 500).json({ok: false, error: err.message});
+    sendLegacyError(res, err);
   }
 });
 
 exports.updateLifestyleSurvey = onRequest(async (req, res) => {
-  setCorsHeaders(req, res);
-  if (req.method === "OPTIONS") {
-    res.status(204).send("");
-    return;
-  }
-  if (req.method !== "POST") {
-    res.status(405).json({ok: false, error: "Method Not Allowed"});
-    return;
-  }
+  if (!prepareJsonRequest(req, res)) return;
   try {
     const body = req.body || {};
     const houseNo = normalizeHouseNo(body.houseNo);
@@ -9834,20 +13620,12 @@ exports.updateLifestyleSurvey = onRequest(async (req, res) => {
     res.status(200).json({ok: true});
   } catch (err) {
     logger.error("updateLifestyleSurvey failed", err);
-    res.status(err.status || 500).json({ok: false, error: err.message});
+    sendLegacyError(res, err);
   }
 });
 
 exports.getLifestyleSurveyStats = onRequest(async (req, res) => {
-  setCorsHeaders(req, res);
-  if (req.method === "OPTIONS") {
-    res.status(204).send("");
-    return;
-  }
-  if (req.method !== "POST") {
-    res.status(405).json({ok: false, error: "Method Not Allowed"});
-    return;
-  }
+  if (!prepareJsonRequest(req, res)) return;
   try {
     const body = req.body || {};
     await verifyAdminResidentAccess(body, "admin.survey");
@@ -9883,7 +13661,7 @@ exports.getLifestyleSurveyStats = onRequest(async (req, res) => {
     res.status(200).json({ok: true, stats});
   } catch (err) {
     logger.error("getLifestyleSurveyStats failed", err);
-    res.status(err.status || 500).json({ok: false, error: err.message});
+    sendLegacyError(res, err);
   }
 });
 
@@ -10881,124 +14659,30 @@ exports.managePickupRound = onRequest(async (req, res) => {
 // `pattra_payments`; receipts numbered via `pattra_counters/receipts`.
 // Email delivery uses Resend (process.env.RESEND_API_KEY) — optional until set.
 // ===========================================================================
-const PP_COLLECTION = "pattra_payments";
+const PP_COLLECTION = PATTRA_PAYMENTS_COLLECTION;
+// Notes a resident sends without a slip — "จ่ายไปแล้วทาง LINE ตั้งแต่ มี.ค."
+// Kept out of pattra_payments: a message is not a payment.
+const PP_MESSAGES_COLLECTION = "pattra_parking_messages";
+// Append-only trail of changes made to an issued receipt. A receipt is a
+// document people file for expenses, so every edit has to be traceable.
+const PP_RECEIPT_LOG_COLLECTION = "pattra_receipt_log";
+const PP_PLANS_COLLECTION = PATTRA_INSTALLMENT_PLANS_COLLECTION;
+const PP_SLIP_INBOX_COLLECTION = "pattra_slip_uploads";
 const PP_BLOCK = "38";
-const PP_FROM = "Pattra8 Pay <receipt@pattra8.com>"; // requires verified domain in Resend
-const PP_MONTHS = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."];
-
-function ppHouseNum(v) {
-  const m = String(v == null ? "" : v).match(/(\d+)\s*$/);
-  if (!m) return null;
-  const n = parseInt(m[1], 10);
-  return n >= 1 && n <= 68 ? n : null;
-}
-
-// --- Thai baht text -------------------------------------------------------
-function ppBahtText(amount) {
-  const TH = ["ศูนย์","หนึ่ง","สอง","สาม","สี่","ห้า","หก","เจ็ด","แปด","เก้า"];
-  const POS = ["","สิบ","ร้อย","พัน","หมื่น","แสน","ล้าน"];
-  function readInt(numStr) {
-    let r = "";
-    const len = numStr.length;
-    for (let i = 0; i < len; i++) {
-      const d = parseInt(numStr[i], 10);
-      const pos = (len - i - 1) % 6;
-      if (d !== 0) {
-        if (pos === 1 && d === 1) r += "สิบ";
-        else if (pos === 1 && d === 2) r += "ยี่สิบ";
-        else if (pos === 0 && d === 1 && len > 1 && (len - i) % 6 !== 1) r += "เอ็ด";
-        else r += TH[d] + POS[pos];
-      }
-      if (pos === 0 && i !== len - 1) r += "ล้าน";
-    }
-    return r;
-  }
-  const fixed = Math.abs(amount).toFixed(2);
-  const [b, s] = fixed.split(".");
-  let t = parseInt(b, 10) === 0 ? "ศูนย์บาท" : readInt(b) + "บาท";
-  if (parseInt(s, 10) === 0) t += "ถ้วน";
-  else t += readInt(s) + "สตางค์";
-  return t;
-}
-
-function ppPeriodLabel(p) {
-  if (p.feeType === "common") {
-    return p.period === "H1" ? "ครึ่งปีแรก (ม.ค.–มิ.ย.)" : "ครึ่งปีหลัง (ก.ค.–ธ.ค.)";
-  }
-  const [y, m] = String(p.period).split("-");
-  return `${PP_MONTHS[parseInt(m, 10) - 1]} ${y}`;
-}
-
-function ppMoney(n) {
-  return Number(n).toLocaleString("th-TH", {minimumFractionDigits: 2});
-}
-
-function ppReceiptHtml(p) {
-  const house = `${PP_BLOCK}/${p.houseNo}`;
-  const dateStr = new Date(p.verifiedAt || Date.now())
-      .toLocaleDateString("th-TH", {day: "numeric", month: "long", year: "numeric"});
-  const fee = p.feeType === "common" ? "ค่าส่วนกลาง" : "ค่าจอดรถ";
-  const amt = ppMoney(p.amount);
-  return `<!doctype html><html lang="th"><head><meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>ใบเสร็จรับเงิน ${p.receiptNo || ""}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Sriracha&family=Cormorant+Garamond:wght@500;600;700&family=IBM+Plex+Sans+Thai:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<style>*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:"IBM Plex Sans Thai",system-ui,sans-serif;color:#2a2218;background:#efe7d8;padding:28px 16px;-webkit-font-smoothing:antialiased}
-.num{font-family:"IBM Plex Sans Thai",system-ui,sans-serif;font-feature-settings:"lnum" 1,"tnum" 1}
-.doc{max-width:560px;margin:0 auto;background:#fff;border-radius:22px;overflow:hidden;box-shadow:0 20px 50px rgba(80,60,30,.14)}
-.bar{height:6px;background:linear-gradient(90deg,#d4913f,#c47a2c)}
-.brand{padding:28px 30px 0;text-align:center}
-.wm{font-family:"Cormorant Garamond",serif;font-size:40px;font-weight:600;letter-spacing:.05em;color:#2a2218;line-height:1}
-.wmsub{font-size:14.5px;color:#6b5d4a;margin-top:7px}
-.doctitle{width:100%;border-collapse:collapse}
-.doctitle .rule{border-bottom:1px solid #e6dcc7;width:50%;font-size:0;line-height:0}
-.doctitle .ttl{white-space:nowrap;padding:0 14px;text-align:center;font-size:18px;font-weight:600;letter-spacing:.3em;color:#c47a2c}
-.docmeta{margin:13px 30px 0;text-align:center;font-size:13.5px;color:#6b5d4a}
-.paid{display:inline-block;background:#e2ecd6;color:#4a6238;font-size:12.5px;font-weight:600;padding:5px 13px;border-radius:999px;white-space:nowrap;margin-right:8px}
-.rno2 b{color:#2a2218;font-weight:600}
-.hero{padding:20px 30px 16px;text-align:center}
-.hero .l{font-size:14.5px;color:#6b5d4a;letter-spacing:.01em}
-.hero .h{font-size:46px;font-weight:700;color:#2a2218;line-height:1.05;margin:6px 0 4px;letter-spacing:.01em}
-.hero .p{font-size:14px;color:#6b5d4a}
-.amtline{margin:0 30px;background:#faf6ee;border:1px solid #efe6d4;border-radius:14px;padding:16px 22px}
-.amtline table{width:100%;border-collapse:collapse}
-.amtline .k{font-size:14px;color:#6b5d4a;text-align:left;vertical-align:middle}
-.amtline .v{font-size:28px;font-weight:700;color:#c47a2c;line-height:1;white-space:nowrap;text-align:right;vertical-align:middle}
-.words{margin:10px 30px 0;font-size:13.5px;color:#6b5d4a;font-style:italic;text-align:center}
-.klist{margin:16px 30px 0}
-.krow{width:100%;border-collapse:collapse}
-.krow td{padding:10px 0;border-bottom:1px solid #efe6d4;font-size:14px;vertical-align:top}
-.krow td.k{color:#6b5d4a;white-space:nowrap}
-.krow td.v{color:#2a2218;font-weight:500;text-align:right;padding-left:24px}
-.foot{margin:14px 30px 26px;padding-top:14px;border-top:1px solid #efe6d4}
-.foot table{width:100%;border-collapse:collapse}
-.foot .note{font-size:11.5px;color:#6b5d4a;line-height:1.6;text-align:left;vertical-align:bottom}
-.foot .signcell{text-align:right;vertical-align:bottom;white-space:nowrap}
-.sign{display:inline-block;text-align:center}
-.sign .sig{font-family:"Sriracha",cursive;font-size:19px;color:#2a2218;line-height:1.2;white-space:nowrap}
-.sign .line{border-top:1px solid #c9b89c;margin:3px 0 4px}
-.sign .cap{font-size:10.5px;color:#9a8b75}
-.fine{padding:16px 30px 24px;font-size:10px;color:#b9a98f;text-align:center}
-@media print{body{background:#fff;padding:0}.doc{box-shadow:none;border-radius:0}}</style></head>
-<body><div class="doc">
-<div class="bar"></div>
-<div class="brand"><div class="wm">Pattra Villa 8</div><div class="wmsub">นิติบุคคล ภัทราวิลล่า 8</div></div>
-<div style="padding:20px 30px 0"><table class="doctitle" role="presentation" cellpadding="0" cellspacing="0"><tr><td class="rule"></td><td class="ttl">ใบเสร็จรับเงิน</td><td class="rule"></td></tr></table></div>
-<div class="docmeta"><span class="paid">✓ ชำระแล้ว</span>${p.receiptNo ? `<span class="rno2"><b class="num">${p.receiptNo}</b></span>` : ""}</div>
-<div class="hero"><div class="l">${fee} · บ้านเลขที่</div><div class="h num">${PP_BLOCK} / ${p.houseNo}</div><div class="p">${ppPeriodLabel(p)} · ปี ${p.year}</div></div>
-<div class="amtline"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td class="k">จำนวนเงินที่ได้รับ</td><td class="v num">฿${amt}</td></tr></table></div>
-<div class="words">(${ppBahtText(p.amount)})</div>
-<div class="klist">
-<table class="krow" role="presentation" cellpadding="0" cellspacing="0"><tr><td class="k">ผู้ชำระ</td><td class="v">${p.payerName || "บ้าน " + house}</td></tr></table>
-<table class="krow" role="presentation" cellpadding="0" cellspacing="0"><tr><td class="k">วันที่</td><td class="v">${dateStr}</td></tr></table>
-<table class="krow" role="presentation" cellpadding="0" cellspacing="0"><tr><td class="k">โอนผ่าน</td><td class="v">ธนาคารไทยพาณิชย์ (SCB)</td></tr></table>
-</div>
-<div class="foot"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td class="note">ได้รับเงินไว้เป็นการถูกต้องแล้ว</td>
-<td class="signcell"><div class="sign"><div class="sig">กรรมการนิติบุคคล ชุด 5</div><div class="line"></div><div class="cap">ผู้รับเงิน</div></div></td></tr></table></div>
-</div></body></html>`;
-}
+const PP_COMMON_BASE = 9600;
+const PP_PARKING_RATE = 600; // monthly parking slot rent, baht
+const PP_PUBLIC_COMMON_PERIOD = "H2";
+const PP_PUBLIC_COMMON_YEAR = 2026;
+// The estate is who sends the receipt — "Pattra8 Pay" is an internal tool
+// name and means nothing to a resident scanning their inbox.
+const PP_FROM = "Pattra Villa 8 <receipt@pattra8.com>"; // verified domain in Resend
+const PP_ADMIN_NOTIFICATION_EMAIL = "mrteam388@gmail.com";
+// The receipt document itself lives in its own module so maintenance
+// scripts can render byte-identical output — see domains/payments/.
+const {
+  periodLabel: ppPeriodLabel,
+  renderReceiptHtml: ppReceiptHtml,
+} = require("./domains/payments/receipt-template");
 
 async function ppSendEmail(to, subject, html) {
   const key = process.env.RESEND_API_KEY;
@@ -11019,6 +14703,40 @@ async function ppSendEmail(to, subject, html) {
     logger.warn("pattraPay email error", e);
     return {sent: false, reason: "exception"};
   }
+}
+
+function ppNewSlipNotificationHtml(houseNo, amount, uploadedAt) {
+  const uploadedAtText = new Intl.DateTimeFormat("th-TH", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Bangkok",
+  }).format(uploadedAt);
+  const amountText = Number(amount).toLocaleString("th-TH", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return `<!doctype html><html lang="th"><head><meta charset="utf-8"></head>
+<body style="margin:0;background:#f7f1e7;font-family:Arial,sans-serif;color:#2a2218">
+<div style="max-width:560px;margin:0 auto;padding:28px 16px">
+<div style="overflow:hidden;border:1px solid #e6dcc7;border-radius:18px;background:#fff">
+<div style="height:6px;background:#c47a2c"></div>
+<div style="padding:28px">
+<div style="font-size:12px;font-weight:700;letter-spacing:.16em;color:#c47a2c">
+PATTRA8 PAY · NEW SLIP
+</div>
+<h1 style="margin:10px 0 6px;font-size:26px">มีสลิปใหม่เข้าตรวจรายการ</h1>
+<p style="margin:0 0 22px;color:#6b5d4a">ลูกบ้านส่งหลักฐานการชำระเงินเข้าระบบแล้ว</p>
+<div style="padding:18px;border-radius:14px;background:#faf6ee">
+<p style="margin:0 0 8px"><strong>บ้านเลขที่:</strong> 38/${houseNo}</p>
+<p style="margin:0 0 8px"><strong>ยอด:</strong> ${amountText} บาท</p>
+<p style="margin:0"><strong>อัปโหลดเมื่อ:</strong> ${uploadedAtText}</p>
+</div>
+<a href="https://pattra8.com/commonfee/"
+style="display:block;margin-top:22px;padding:13px 18px;border-radius:10px;
+background:#5f7c4e;color:#fff;text-align:center;text-decoration:none;font-weight:700">
+เปิดหน้าค่าส่วนกลางเพื่อตรวจรายการ
+</a>
+</div></div></div></body></html>`;
 }
 
 function ppParseSlip(dataUrl) {
@@ -11043,6 +14761,90 @@ async function ppUploadSlipDataUrl(docId, dataUrl) {
   });
   return "https://firebasestorage.googleapis.com/v0/b/" +
     `${bucket.name}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
+}
+
+/**
+ * Read a parking slip and turn it into the months it pays for.
+ *
+ * Slip-first flow: the resident picks their house and attaches the transfer,
+ * and the amount on the slip decides how many months it covers. Nothing here
+ * settles anything — every month it returns is written as pending for the
+ * committee to check.
+ *
+ * @param {string} slipDataUrl data-url of the uploaded slip
+ * @param {number} houseNo paying house, already verified as a renter
+ * @param {number} fallbackAmount amount to fall back on when OCR fails
+ * @param {string} wantedStart month the resident chose to start from, for
+ *   settling a month in the past; empty to start from the next open month
+ * @return {Promise<Object>} periods, the amount used, and what OCR saw
+ */
+async function ppReadParkingSlip(
+    slipDataUrl, houseNo, fallbackAmount, wantedStart,
+) {
+  const empty = {
+    periods: [], amount: 0, bank: "", confidence: 0, exact: false, error: "",
+  };
+  const slip = ppParseSlip(slipDataUrl);
+  if (!slip) return {...empty, error: "กรุณาแนบรูปสลิป"};
+  if (slip.buffer.length > 10 * 1024 * 1024) {
+    return {...empty, error: "ไฟล์สลิปใหญ่เกิน 10MB"};
+  }
+
+  let ocr = null;
+  try {
+    ocr = await ppAnalyzeSlipImage(slip.buffer, slip.contentType);
+  } catch (error) {
+    logger.warn("parking slip OCR failed", error);
+  }
+
+  const readAmount = ocr && Number(ocr.amount) > 0 ? Number(ocr.amount) : 0;
+  const amount = readAmount || Number(fallbackAmount) || 0;
+  if (!(amount > 0)) {
+    return {...empty, error: "อ่านยอดจากสลิปไม่ได้ กรุณาลองใหม่"};
+  }
+
+  const guess = inferParkingMonths(amount, PP_PARKING_RATE, houseNo);
+  // An amount that is not a clean run of months still gets recorded — as a
+  // single month the committee reviews — rather than being turned away.
+  const months = guess.auto ? guess.months : 1;
+
+  // Start after every month this house already holds, so prepaying twice does
+  // not buy the same month again.
+  const houseSnap = await db.collection(PP_COLLECTION)
+      .where("houseNo", "==", houseNo).get();
+  const taken = houseSnap.docs
+      .map((doc) => doc.data() || {})
+      .filter((data) => data.feeType === "parking" &&
+        (data.status === "pending" || data.status === "verified"))
+      .map((data) => String(data.period || ""));
+  const now = new Date(Date.now() + 7 * 60 * 60 * 1000); // Bangkok
+  const currentPeriod = `${now.getUTCFullYear()}-` +
+    `${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+  // A resident settling a past month names the month themselves; otherwise
+  // carry on from the first month they do not already hold.
+  const chosen = String(wantedStart || "").trim();
+  const start = parseParkingPeriod(chosen) ?
+    chosen : nextParkingStart(taken, currentPeriod);
+  const periods = parkingPeriodsFrom(start, months);
+
+  // Never sell a month the house already holds, whichever direction we came
+  // from — the committee would otherwise see two rows for one month.
+  const clash = periods.filter((period) => taken.includes(period));
+  if (clash.length) {
+    return {
+      ...empty,
+      error: `มีรายการของ ${clash.join(", ")} อยู่แล้ว กรุณาเลือกเดือนอื่น`,
+    };
+  }
+
+  return {
+    periods,
+    amount,
+    bank: ocr && ocr.bank || "",
+    confidence: ocr ? Number(ocr.confidence) || 0 : 0,
+    exact: guess.auto,
+    error: periods.length ? "" : "คำนวณเดือนจากยอดไม่ได้",
+  };
 }
 
 /**
@@ -11163,6 +14965,14 @@ function ppMapDoc(doc) {
     overage: Number(d.overage || 0),
     rawNote: d.rawNote || "",
     reviewNote: d.reviewNote || "",
+    residentNote: d.residentNote || "",
+    groupId: d.groupId || "",
+    groupIndex: Number.isFinite(d.groupIndex) ? d.groupIndex : null,
+    groupSize: Number.isFinite(d.groupSize) ? d.groupSize : null,
+    groupAmount: Number.isFinite(d.groupAmount) ? d.groupAmount : null,
+    receiptRef: d.receiptRef || "",
+    planId: d.planId || "",
+    ocrAmount: d.ocrAmount == null ? null : Number(d.ocrAmount),
   };
 }
 
@@ -11176,6 +14986,121 @@ function ppTimestampFromMillis(value) {
   return admin.firestore.Timestamp.fromMillis(ms);
 }
 
+function ppPlanId(houseNo, feeType, period, year) {
+  return `${year}_${feeType}_${period}_${houseNo}`;
+}
+
+function ppMapPlan(doc) {
+  const d = doc.data() || {};
+  return {
+    id: doc.id,
+    houseNo: d.houseNo,
+    feeType: d.feeType || "common",
+    period: d.period || "",
+    year: Number(d.year) || null,
+    totalAmount: Number(d.totalAmount || 0),
+    paidAmount: Number(d.paidAmount || 0),
+    appliedPaymentIds: Array.isArray(d.appliedPaymentIds) ?
+      d.appliedPaymentIds : [],
+    status: d.status || "active",
+    note: d.note || "",
+    createdBy: d.createdBy || "",
+    createdAt: d.createdAt && d.createdAt.toMillis ?
+      d.createdAt.toMillis() : null,
+    closedAt: d.closedAt && d.closedAt.toMillis ?
+      d.closedAt.toMillis() : null,
+    closeReason: d.closeReason || "",
+  };
+}
+
+async function ppLoadHousePlans(houseNo, year) {
+  const snap = await db.collection(PP_PLANS_COLLECTION)
+      .where("houseNo", "==", houseNo).get();
+  return snap.docs.map(ppMapPlan)
+      .filter((plan) => year == null || Number(plan.year) === Number(year));
+}
+
+async function ppActivePlan(houseNo, period, year) {
+  const doc = await db.collection(PP_PLANS_COLLECTION)
+      .doc(ppPlanId(houseNo, "common", period, year)).get();
+  if (!doc.exists) return null;
+  const plan = ppMapPlan(doc);
+  return isPlanActive(plan) ? plan : null;
+}
+
+async function ppHouseBilling(houseNo, year) {
+  const [paymentSnap, plans] = await Promise.all([
+    db.collection(PP_COLLECTION).where("houseNo", "==", houseNo).get(),
+    ppLoadHousePlans(houseNo, year),
+  ]);
+  return buildHouseBilling({
+    houseNo,
+    year,
+    baseAmount: PP_COMMON_BASE,
+    payments: paymentSnap.docs.map(ppMapDoc),
+    plans,
+  });
+}
+
+// Move records created by the retired public slip inbox into the normal
+// payment verification queue. Deterministic payment IDs make this idempotent:
+// retrying an interrupted adminList request cannot create a second payment.
+async function ppMigrateLegacySlipInbox() {
+  const snap = await db.collection(PP_SLIP_INBOX_COLLECTION).limit(200).get();
+  const pending = snap.docs.filter((doc) => {
+    const data = doc.data() || {};
+    return data.status !== "processed" && data.slipUrl && ppHouseNum(data.houseNo);
+  });
+  if (!pending.length) return 0;
+
+  const batch = db.batch();
+  const migrations = await Promise.all(pending.map(async (doc) => {
+    const data = doc.data() || {};
+    const houseNo = ppHouseNum(data.houseNo);
+    const houseSnap = await db.collection(PP_COLLECTION)
+        .where("houseNo", "==", houseNo).get();
+    const existing = houseSnap.docs.find((paymentDoc) => {
+      const payment = paymentDoc.data() || {};
+      return payment.feeType === "common" &&
+        payment.period === (data.period || PP_PUBLIC_COMMON_PERIOD) &&
+        payment.year === Number(data.year || PP_PUBLIC_COMMON_YEAR) &&
+        (payment.status === "pending" || payment.status === "verified");
+    });
+    if (existing) {
+      return {inboxRef: doc.ref, paymentRef: existing.ref, payload: null};
+    }
+    const paymentRef = db.collection(PP_COLLECTION).doc(`inbox_${doc.id}`);
+    return {
+      inboxRef: doc.ref,
+      paymentRef,
+      payload: {
+        houseNo,
+        feeType: "common",
+        period: data.period || PP_PUBLIC_COMMON_PERIOD,
+        year: Number(data.year || PP_PUBLIC_COMMON_YEAR),
+        amount: Number(data.amount || commonSlipAmount(PP_COMMON_BASE, houseNo)),
+        payerName: "",
+        email: data.email || "",
+        slipUrl: data.slipUrl || "",
+        status: "pending",
+        source: "resident_upload",
+        legacyInboxId: doc.id,
+        createdAt: data.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+      },
+    };
+  }));
+  migrations.forEach(({inboxRef, paymentRef, payload}) => {
+    if (payload) batch.set(paymentRef, payload, {merge: true});
+    batch.update(inboxRef, {
+      status: "processed",
+      paymentId: paymentRef.id,
+      processedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+  await batch.commit();
+  return pending.length;
+}
+
 exports.pattraPay = onRequest(
     {secrets: [LPR_ADMIN_PASSWORD, RESEND_API_KEY]},
     async (req, res) => {
@@ -11187,76 +15112,435 @@ exports.pattraPay = onRequest(
         const body = req.body || {};
         const action = String(body.action || "").trim();
 
+        // -------- public: current common-fee position by house ------------
+        if (action === "houseBilling") {
+          const houseNo = ppHouseNum(body.houseNo);
+          if (!houseNo) {
+            throw Object.assign(new Error("บ้านเลขที่ไม่ถูกต้อง"), {status: 400});
+          }
+          const year = Number.isFinite(parseInt(body.year, 10)) ?
+            parseInt(body.year, 10) : PP_PUBLIC_COMMON_YEAR;
+          const billing = await ppHouseBilling(houseNo, year);
+          const hasInstallment = billing.periods.some((card) =>
+            Boolean(card.installment));
+          let balanceAuthorized = !hasInstallment;
+          if (hasInstallment && String(body.pin || "").trim()) {
+            await verifyResidentPinInternal(
+                `${PP_BLOCK}/${houseNo}`,
+                String(body.pin || ""),
+            );
+            balanceAuthorized = true;
+          }
+          const protectedBilling = balanceAuthorized ?
+            {...billing, requiresPin: false} :
+            redactInstallmentBalances(billing);
+          res.status(200).json({
+            ok: true,
+            ...protectedBilling,
+            houseBlock: PP_BLOCK,
+          });
+          return;
+        }
+
+        // -------- public: simple common-fee slip upload --------------------
+        if (action === "submitCommonSlip") {
+          const houseNo = ppHouseNum(body.houseNo);
+          if (!houseNo) {
+            throw Object.assign(new Error("บ้านเลขที่ไม่ถูกต้อง"), {status: 400});
+          }
+          const period = normalizeCommonPeriod(
+              body.period, PP_PUBLIC_COMMON_PERIOD);
+          const year = Number.isFinite(parseInt(body.year, 10)) ?
+            parseInt(body.year, 10) : PP_PUBLIC_COMMON_YEAR;
+          const email = normalizeOptionalReceiptEmail(body.email);
+          const slip = ppParseSlip(body.slipDataUrl);
+          if (!slip) {
+            throw Object.assign(new Error("กรุณาแนบรูปสลิป"), {status: 400});
+          }
+          const allowedTypes = new Set([
+            "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif",
+          ]);
+          if (!allowedTypes.has(slip.contentType)) {
+            throw Object.assign(new Error("รองรับเฉพาะไฟล์รูปภาพ JPG, PNG, WEBP หรือ HEIC"),
+                {status: 400});
+          }
+          if (slip.buffer.length > 10 * 1024 * 1024) {
+            throw Object.assign(new Error("ไฟล์สลิปใหญ่เกิน 10MB"), {status: 400});
+          }
+
+          const plan = await ppActivePlan(houseNo, period, year);
+          let balanceAuthorized = false;
+          if (plan && String(body.pin || "").trim()) {
+            await verifyResidentPinInternal(
+                `${PP_BLOCK}/${houseNo}`,
+                String(body.pin || ""),
+            );
+            balanceAuthorized = true;
+          }
+          const [paymentSnap, legacyInboxSnap] = await Promise.all([
+            db.collection(PP_COLLECTION).where("houseNo", "==", houseNo).get(),
+            db.collection(PP_SLIP_INBOX_COLLECTION).where("houseNo", "==", houseNo).get(),
+          ]);
+          const hasPayment = paymentSnap.docs.some((doc) => {
+            const data = doc.data() || {};
+            if (data.feeType !== "common" || data.period !== period ||
+                Number(data.year) !== Number(year)) {
+              return false;
+            }
+            return plan ? data.status === "pending" :
+              data.status === "pending" || data.status === "verified";
+          });
+          const hasLegacyUpload = !plan && legacyInboxSnap.docs.some((doc) => {
+            const data = doc.data() || {};
+            return data.period === period &&
+              Number(data.year) === Number(year) &&
+              data.status !== "processed" &&
+              data.slipUrl;
+          });
+          if (hasPayment || hasLegacyUpload) {
+            res.status(200).json({
+              ok: true,
+              duplicate: true,
+              status: "received",
+            });
+            return;
+          }
+
+          const ref = db.collection(PP_COLLECTION).doc();
+          const ext = slip.contentType.split("/")[1] || "jpg";
+          const storagePath = `pattra-slips/${ref.id}.${ext}`;
+          const token = crypto.randomUUID();
+          const bucket = admin.storage().bucket();
+          await bucket.file(storagePath).save(slip.buffer, {
+            resumable: false,
+            metadata: {
+              contentType: slip.contentType,
+              contentDisposition: `attachment; filename="slip-38-${houseNo}.${ext}"`,
+              metadata: {firebaseStorageDownloadTokens: token},
+            },
+          });
+          const slipUrl = "https://firebasestorage.googleapis.com/v0/b/" +
+            `${bucket.name}/o/${encodeURIComponent(storagePath)}?alt=media&` +
+            `token=${token}`;
+          const uploadedAt = new Date();
+          let amount = commonSlipAmount(PP_COMMON_BASE, houseNo);
+          let ocr = null;
+          if (plan) {
+            amount = 0;
+            try {
+              ocr = await ppAnalyzeSlipImage(slip.buffer, slip.contentType);
+              if (ocr && Number(ocr.amount) > 0) amount = Number(ocr.amount);
+            } catch (error) {
+              logger.warn("pattraPay plan slip OCR failed", error);
+            }
+          }
+          const payload = {
+            houseNo,
+            feeType: "common",
+            period,
+            year,
+            amount,
+            payerName: "",
+            email,
+            slipUrl,
+            storagePath,
+            status: "pending",
+            source: "resident_upload",
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          };
+          if (plan) {
+            payload.planId = plan.id;
+            payload.ocrAmount = amount > 0 ? amount : null;
+            payload.bank = ocr && ocr.bank || "";
+            payload.confidence = ocr ? String(ocr.confidence) : "";
+            payload.reviewNote = amount > 0 ?
+              "ผ่อนชำระ — ยอดอ่านจากสลิปอัตโนมัติ กรุณาตรวจก่อนยืนยัน" :
+              "ผ่อนชำระ — อ่านยอดจากสลิปไม่ได้ กรุณากรอกยอดก่อนยืนยัน";
+          }
+          await ref.set(payload);
+          const notification = await ppSendEmail(
+              PP_ADMIN_NOTIFICATION_EMAIL,
+              `มีสลิปใหม่ บ้าน 38/${houseNo} · ${amount.toFixed(2)} บาท`,
+              ppNewSlipNotificationHtml(houseNo, amount, uploadedAt),
+          );
+          const notificationPatch = {
+            adminNotificationStatus: notification.sent ?
+              "sent" : `failed:${notification.reason || "unknown"}`,
+          };
+          if (notification.sent) {
+            notificationPatch.adminNotificationSentAt =
+              admin.firestore.FieldValue.serverTimestamp();
+          }
+          await ref.update(notificationPatch).catch((error) => {
+            logger.warn("pattraPay notification status update failed", error);
+          });
+          const response = {ok: true, duplicate: false, status: "received"};
+          if (plan && balanceAuthorized) {
+            const progress = planProgress(plan);
+            response.installment = {
+              amount,
+              totalAmount: progress.totalAmount,
+              paidAmount: progress.paidAmount,
+              projectedPaidAmount:
+                Math.round((progress.paidAmount + amount) * 100) / 100,
+              projectedRemaining: Math.max(0, Math.round(
+                  (progress.totalAmount - progress.paidAmount - amount) * 100,
+              ) / 100),
+              percent: progress.percent,
+            };
+          }
+          res.status(200).json(response);
+          return;
+        }
+
+        // -------- admin: list the separate public slip inbox --------------
+        if (action === "adminListCommonSlips") {
+          await verifyAdminResidentAccess(body);
+          const snap = await db.collection(PP_SLIP_INBOX_COLLECTION)
+              .orderBy("createdAt", "desc").limit(200).get();
+          const uploads = snap.docs.map((doc) => {
+            const data = doc.data() || {};
+            return {
+              id: doc.id,
+              houseNo: data.houseNo,
+              email: data.email || "",
+              amount: Number(data.amount || 0),
+              slipUrl: data.slipUrl || "",
+              status: data.status || "new",
+              createdAt: data.createdAt && data.createdAt.toMillis ?
+                data.createdAt.toMillis() : null,
+            };
+          });
+          res.status(200).json({ok: true, uploads});
+          return;
+        }
+
+        // -------- admin: remove a migrated record from the retired inbox ---
+        if (action === "adminDeleteLegacyCommonSlip") {
+          await verifyAdminResidentAccess(body);
+          const uploadId = String(body.id || "").trim();
+          if (!/^[A-Za-z0-9_-]{1,200}$/.test(uploadId)) {
+            throw Object.assign(new Error("รหัสรายการไม่ถูกต้อง"), {status: 400});
+          }
+          const inboxRef = db.collection(PP_SLIP_INBOX_COLLECTION).doc(uploadId);
+          const inboxDoc = await inboxRef.get();
+          if (!inboxDoc.exists) {
+            throw Object.assign(new Error("ไม่พบรายการในกล่องรับสลิปเดิม"), {status: 404});
+          }
+          const inbox = inboxDoc.data() || {};
+          const houseNo = ppHouseNum(inbox.houseNo);
+          const paymentSnap = houseNo ?
+            await db.collection(PP_COLLECTION).where("houseNo", "==", houseNo).get() :
+            null;
+          const payment = paymentSnap && paymentSnap.docs.find((doc) => {
+            const data = doc.data() || {};
+            return data.feeType === "common" &&
+              data.period === (inbox.period || PP_PUBLIC_COMMON_PERIOD) &&
+              data.year === Number(inbox.year || PP_PUBLIC_COMMON_YEAR) &&
+              (data.status === "pending" || data.status === "verified");
+          });
+          if (!payment) {
+            throw Object.assign(
+                new Error("ยังไม่พบรายการนี้ใน Pay Status จึงยังลบจากกล่องเดิมไม่ได้"),
+                {status: 409},
+            );
+          }
+          // Keep the payment record and its Storage object. Only the obsolete
+          // inbox pointer is removed, so review history and slip access remain.
+          await inboxRef.delete();
+          res.status(200).json({
+            ok: true,
+            deleted: true,
+            houseNo,
+            paymentId: payment.id,
+          });
+          return;
+        }
+
         // -------- public: submit a payment ---------------------------------
+        // One parking transfer may cover several consecutive months (600 = 1,
+        // 1,200 = 2, 3,600.xx = 6). Each month becomes its own pending row so
+        // the existing verify/receipt flow is unchanged, and the rows share a
+        // groupId plus one uploaded slip.
         if (action === "submitPayment") {
           const houseNo = ppHouseNum(body.houseNo);
           const feeType = String(body.feeType || "");
-          const period = String(body.period || "");
           const year = parseInt(body.year, 10);
           const amount = Number(body.amount);
           if (!houseNo) throw Object.assign(new Error("บ้านเลขที่ไม่ถูกต้อง"), {status: 400});
           if (feeType !== "common" && feeType !== "parking") throw Object.assign(new Error("ประเภทไม่ถูกต้อง"), {status: 400});
-          if (!period) throw Object.assign(new Error("ไม่ระบุงวด"), {status: 400});
           if (!Number.isFinite(amount) || amount <= 0) throw Object.assign(new Error("ยอดเงินไม่ถูกต้อง"), {status: 400});
 
-          let slipUrl = "";
-          const slip = ppParseSlip(body.slipDataUrl);
-          if (slip) {
-            if (slip.buffer.length > 10 * 1024 * 1024) throw Object.assign(new Error("ไฟล์สลิปใหญ่เกิน 10MB"), {status: 400});
-            const ref = db.collection(PP_COLLECTION).doc();
-            const ext = slip.contentType.split("/")[1] || "jpg";
-            const path = `pattra-slips/${ref.id}.${ext}`;
-            const token = crypto.randomUUID();
-            const bucket = admin.storage().bucket();
-            await bucket.file(path).save(slip.buffer, {
-              resumable: false,
-              metadata: {contentType: slip.contentType, metadata: {firebaseStorageDownloadTokens: token}},
-            });
-            slipUrl = "https://firebasestorage.googleapis.com/v0/b/" +
-              `${bucket.name}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
+          // Either an explicit list of months, or a start month + a count.
+          const startPeriod = String(body.startPeriod || "").trim();
+          const monthCount = parseInt(body.months, 10);
+          const requested = Array.isArray(body.periods) ?
+            body.periods :
+            (startPeriod && Number.isFinite(monthCount) ?
+              parkingPeriodsFrom(startPeriod, monthCount) :
+              (body.period ? [body.period] : []));
+          let periods = requested
+              .map((value) => String(value || "").trim())
+              .filter(Boolean);
+
+          // Slip-first parking: the resident only attaches the slip. Read the
+          // transferred amount off it, turn that into a run of months, and
+          // start from the first month the house does not already hold.
+          let read = null;
+          if (feeType === "parking" && !periods.length) {
+            read = await ppReadParkingSlip(
+                body.slipDataUrl, houseNo, amount, startPeriod,
+            );
+            periods = read.periods;
+            if (!periods.length) {
+              throw Object.assign(
+                  new Error(read.error ||
+                    "อ่านยอดจากสลิปไม่ได้ กรุณาเลือกเดือนเอง"),
+                  {status: 400},
+              );
+            }
+          }
+          if (!periods.length) throw Object.assign(new Error("ไม่ระบุงวด"), {status: 400});
+          if (new Set(periods).size !== periods.length) {
+            throw Object.assign(new Error("งวดซ้ำกัน"), {status: 400});
+          }
+          if (periods.length > 1) {
+            if (feeType !== "parking") {
+              throw Object.assign(new Error("ชำระหลายงวดพร้อมกันได้เฉพาะค่าจอดรถ"), {status: 400});
+            }
+            if (periods.length > MAX_PARKING_PERIODS) {
+              throw Object.assign(
+                  new Error(`ชำระล่วงหน้าได้ไม่เกิน ${MAX_PARKING_PERIODS} เดือนต่อหนึ่งสลิป`),
+                  {status: 400},
+              );
+            }
+          }
+
+          const total = read ? read.amount : amount;
+          const rows = splitSlipAmount(total, houseNo, periods.length);
+          if (rows.length !== periods.length) {
+            throw Object.assign(new Error("แบ่งยอดตามงวดไม่ได้"), {status: 400});
+          }
+
+          const refs = periods.map(() => db.collection(PP_COLLECTION).doc());
+          // Upload once and point every month at the same slip image.
+          const slipUrl = await ppUploadSlipDataUrl(refs[0].id, body.slipDataUrl);
+          const groupId = periods.length > 1 ? refs[0].id : "";
+          const email = String(body.email || "").trim();
+          // Free text from the resident ("โอนรวม 3 เดือน", "โอนจากบัญชีแม่").
+          // Kept apart from reviewNote, which the system writes.
+          const residentNote = ppCleanImportText(body.residentNote, 500);
+
+          // Advisory only: say so when the transferred amount is not a clean
+          // multiple of the monthly rate, so the committee looks closer.
+          const suggestion = inferParkingMonths(
+              total, PP_PARKING_RATE, houseNo,
+          );
+          const mismatch = !suggestion.auto ||
+            suggestion.months !== periods.length;
+          const groupNote =
+            `ชำระล่วงหน้า ${periods.length} เดือนในสลิปเดียว ` +
+            `(${periods[0]} ถึง ${periods[periods.length - 1]}) ` +
+            `ยอดโอนรวม ${total.toFixed(2)} บาท` +
+            (mismatch ? " — ยอดไม่ตรงจำนวนเดือน กรุณาตรวจก่อนยืนยัน" : "");
+
+          const batch = db.batch();
+          refs.forEach((ref, index) => {
+            // A parking run can cross into the next year, so each row keeps
+            // the year of its own month rather than the year of the transfer.
+            const rowYear = feeType === "parking" ?
+              Number(periods[index].slice(0, 4)) || year : year;
             const payload = {
-              houseNo, feeType, period, year, amount,
-              payerName: "", email: String(body.email || "").trim(),
-              slipUrl, status: "pending",
+              houseNo,
+              feeType,
+              period: periods[index],
+              year: rowYear,
+              amount: rows[index] / 100,
+              payerName: "",
+              email,
+              slipUrl,
+              status: "pending",
               createdAt: admin.firestore.FieldValue.serverTimestamp(),
             };
-            await ref.set(payload);
-            res.status(200).json({ok: true, id: ref.id});
-            return;
-          }
-          // no slip
-          const payload = {
-            houseNo, feeType, period, year, amount,
-            payerName: "", email: String(body.email || "").trim(),
-            slipUrl: "", status: "pending",
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          };
-          const ref = await db.collection(PP_COLLECTION).add(payload);
-          res.status(200).json({ok: true, id: ref.id});
+            if (residentNote) payload.residentNote = residentNote;
+            if (read) {
+              payload.source = "resident_upload";
+              payload.ocrAmount = read.amount;
+              payload.bank = read.bank;
+              payload.confidence = String(read.confidence);
+              payload.reviewNote =
+                `อ่านยอดจากสลิปอัตโนมัติ ${read.amount.toFixed(2)} บาท — ` +
+                "กรุณาตรวจก่อนยืนยัน";
+            }
+            if (groupId) {
+              payload.groupId = groupId;
+              payload.groupIndex = index;
+              payload.groupSize = periods.length;
+              payload.groupAmount = total;
+              payload.reviewNote = groupNote;
+            }
+            batch.set(ref, payload);
+          });
+          await batch.commit();
+
+          res.status(200).json({
+            ok: true,
+            id: refs[0].id,
+            ids: refs.map((ref) => ref.id),
+            periods,
+            groupId,
+            amount: total,
+            months: periods.length,
+            read: read ? {
+              amount: read.amount,
+              bank: read.bank,
+              confidence: read.confidence,
+              exact: read.exact,
+            } : null,
+          });
           return;
         }
 
         // -------- public: status board (house numbers only, no PII) --------
         if (action === "publicStatus") {
-          const snap = await db.collection(PP_COLLECTION)
-              .where("status", "in", ["verified", "pending"]).get();
+          const [snap, planSnap] = await Promise.all([
+            db.collection(PP_COLLECTION)
+                .where("status", "in", ["verified", "pending"]).get(),
+            db.collection(PP_PLANS_COLLECTION)
+                .where("status", "==", "active").get(),
+          ]);
           const status = {common: {}, parking: {}};
           const pending = {common: {}, parking: {}};
+          const installment = {common: {}, parking: {}};
+          const onPlan = new Set();
+          planSnap.docs.forEach((doc) => {
+            const plan = ppMapPlan(doc);
+            const key = `${plan.year}:${plan.period}`;
+            onPlan.add(`${plan.houseNo}|${plan.feeType}|${key}`);
+            if (!installment.common[key]) installment.common[key] = [];
+            installment.common[key].push({
+              houseNo: plan.houseNo,
+              percent: planProgress(plan).percent,
+            });
+          });
           snap.docs.forEach((doc) => {
             const d = doc.data() || {};
+            const key = d.feeType === "common" ?
+              `${d.year}:${d.period}` : d.period;
+            if (onPlan.has(`${d.houseNo}|${d.feeType}|${key}`)) return;
             const target = d.status === "verified" ? status : pending;
             const bucket = d.feeType === "common" ? target.common : target.parking;
-            const key = d.feeType === "common" ? `${d.year}:${d.period}` : d.period;
             if (!bucket[key]) bucket[key] = [];
             if (!bucket[key].includes(d.houseNo)) bucket[key].push(d.houseNo);
           });
-          res.status(200).json({ok: true, status, pending});
+          res.status(200).json({ok: true, status, pending, installment});
           return;
         }
 
         // -------- admin: list all payments (PII) ---------------------------
         if (action === "adminList") {
           await verifyAdminResidentAccess(body);
+          await ppMigrateLegacySlipInbox();
           const snap = await db.collection(PP_COLLECTION).orderBy("createdAt", "desc").limit(1000).get();
           res.status(200).json({ok: true, payments: snap.docs.map(ppMapDoc)});
           return;
@@ -11399,47 +15683,108 @@ exports.pattraPay = onRequest(
           await verifyAdminResidentAccess(body);
           const houseNo = ppHouseNum(body.houseNo);
           const feeType = String(body.feeType || "common");
-          const period = ppCleanImportText(body.period, 20);
           const year = parseInt(body.year, 10);
           const amount = Number(body.amount);
           if (!houseNo) throw Object.assign(new Error("บ้านเลขที่ไม่ถูกต้อง"), {status: 400});
           if (feeType !== "common" && feeType !== "parking") throw Object.assign(new Error("ประเภทไม่ถูกต้อง"), {status: 400});
-          if (!period) throw Object.assign(new Error("ไม่ระบุงวด"), {status: 400});
           if (!Number.isFinite(year)) throw Object.assign(new Error("ปีไม่ถูกต้อง"), {status: 400});
           if (!Number.isFinite(amount) || amount <= 0) throw Object.assign(new Error("ยอดเงินไม่ถูกต้อง"), {status: 400});
           if (!ppParseSlip(body.slipDataUrl)) throw Object.assign(new Error("ไม่มีรูปสลิป"), {status: 400});
+
+          // Parking may be prepaid several months on one slip, so the period
+          // is a list here. Common fee stays exactly one period.
+          const askedPeriods = Array.isArray(body.periods) ?
+            body.periods : [body.period];
+          const periods = askedPeriods
+              .map((value) => ppCleanImportText(value, 20))
+              .filter(Boolean);
+          if (!periods.length) throw Object.assign(new Error("ไม่ระบุงวด"), {status: 400});
+          if (new Set(periods).size !== periods.length) {
+            throw Object.assign(new Error("งวดซ้ำกัน"), {status: 400});
+          }
+          if (periods.length > 1) {
+            if (feeType !== "parking") {
+              throw Object.assign(new Error("ชำระหลายงวดพร้อมกันได้เฉพาะค่าจอดรถ"), {status: 400});
+            }
+            if (periods.length > MAX_PARKING_PERIODS) {
+              throw Object.assign(
+                  new Error(`ชำระล่วงหน้าได้ไม่เกิน ${MAX_PARKING_PERIODS} เดือนต่อหนึ่งสลิป`),
+                  {status: 400},
+              );
+            }
+          }
 
           // Single-field query (no composite index needed) + in-memory filter —
           // a house has at most a handful of payment rows, so this is cheap.
           const houseSnap = await db.collection(PP_COLLECTION).where("houseNo", "==", houseNo).get();
           const dupDocs = houseSnap.docs.filter((d) => {
             const dd = d.data();
-            return dd.feeType === feeType && dd.period === period && dd.year === year &&
+            return dd.feeType === feeType && periods.includes(dd.period) &&
+              dd.year === year &&
               (dd.status === "pending" || dd.status === "verified");
           });
           if (dupDocs.length && body.confirmDuplicate !== true) {
-            const existing = dupDocs.map((d) => ({id: d.id, amount: d.data().amount, status: d.data().status}));
+            const existing = dupDocs.map((d) => ({
+              id: d.id,
+              period: d.data().period,
+              amount: d.data().amount,
+              status: d.data().status,
+            }));
             res.status(200).json({ok: true, duplicate: true, existing});
             return;
           }
 
-          const ref = db.collection(PP_COLLECTION).doc();
-          const slipUrl = await ppUploadSlipDataUrl(ref.id, body.slipDataUrl);
-          await ref.set({
-            houseNo, feeType, period, year, amount,
-            payerName: ppCleanImportText(body.payerName, 160),
-            email: "", slipUrl, status: "pending", source: "admin_upload",
-            bank: ppCleanImportText(body.bank, 80),
-            transactionRef: ppCleanImportText(body.transactionRef, 120),
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          const rows = splitSlipAmount(amount, houseNo, periods.length);
+          if (rows.length !== periods.length) {
+            throw Object.assign(new Error("แบ่งยอดตามงวดไม่ได้"), {status: 400});
+          }
+          const refs = periods.map(() => db.collection(PP_COLLECTION).doc());
+          const slipUrl = await ppUploadSlipDataUrl(refs[0].id, body.slipDataUrl);
+          const groupId = periods.length > 1 ? refs[0].id : "";
+          const payerName = ppCleanImportText(body.payerName, 160);
+          const bank = ppCleanImportText(body.bank, 80);
+          const transactionRef = ppCleanImportText(body.transactionRef, 120);
+          const reviewNote = ppCleanImportText(body.reviewNote, 500);
+
+          const batch = db.batch();
+          refs.forEach((ref, index) => {
+            const payload = {
+              houseNo, feeType, year,
+              period: periods[index],
+              amount: rows[index] / 100,
+              payerName,
+              email: "", slipUrl, status: "pending", source: "admin_upload",
+              bank, transactionRef,
+              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            };
+            if (reviewNote) payload.reviewNote = reviewNote;
+            if (groupId) {
+              payload.groupId = groupId;
+              payload.groupIndex = index;
+              payload.groupSize = periods.length;
+              payload.groupAmount = amount;
+              payload.reviewNote = (reviewNote ? `${reviewNote} · ` : "") +
+                `ชำระล่วงหน้า ${periods.length} เดือนในสลิปเดียว ` +
+                `(${periods[0]} ถึง ${periods[periods.length - 1]}) ` +
+                `ยอดโอนรวม ${amount.toFixed(2)} บาท`;
+            }
+            batch.set(ref, payload);
           });
-          res.status(200).json({ok: true, duplicate: false, id: ref.id});
+          await batch.commit();
+
+          res.status(200).json({
+            ok: true,
+            duplicate: false,
+            id: refs[0].id,
+            ids: refs.map((ref) => ref.id),
+            periods,
+            groupId,
+          });
           return;
         }
 
         // -------- admin: patch pending payment metadata -------------------
-        // Used when OCR improves after upload. Only safe metadata fields are
-        // patchable; this never verifies, deletes, or changes money fields.
+        // Pending installment rows may also correct the advisory OCR amount.
         if (action === "adminPatchPayment") {
           await verifyAdminResidentAccess(body);
           const id = String(body.id || "");
@@ -11463,6 +15808,19 @@ exports.pattraPay = onRequest(
           }
           if (Object.prototype.hasOwnProperty.call(body, "reviewNote")) {
             patch.reviewNote = ppCleanImportText(body.reviewNote, 500);
+          }
+          if (Object.prototype.hasOwnProperty.call(body, "amount")) {
+            if (!d.planId) {
+              throw Object.assign(
+                  new Error("แก้ยอดได้เฉพาะรายการผ่อนชำระ"), {status: 400});
+            }
+            const amount = Number(body.amount);
+            if (!Number.isFinite(amount) || amount <= 0) {
+              throw Object.assign(new Error("ยอดเงินไม่ถูกต้อง"), {status: 400});
+            }
+            patch.amount = Math.round(amount * 100) / 100;
+            patch.amountReviewedAt = admin.firestore.FieldValue.serverTimestamp();
+            patch.amountReviewedBy = normalizeHouseNo(body.adminHouseNo || "");
           }
           await ref.update(patch);
           res.status(200).json({ok: true, id});
@@ -11497,18 +15855,11 @@ exports.pattraPay = onRequest(
           const id = String(body.id || "");
           if (!id) throw Object.assign(new Error("ไม่ระบุรายการ"), {status: 400});
           const ref = db.collection(PP_COLLECTION).doc(id);
-
-          const seq = await db.runTransaction(async (tx) => {
-            const cRef = db.doc("pattra_counters/receipts");
-            const cSnap = await tx.get(cRef);
-            const next = ((cSnap.exists ? cSnap.data().value : 0) || 0) + 1;
-            tx.set(cRef, {value: next}, {merge: true});
-            return next;
-          });
-
-          const snap = await ref.get();
-          if (!snap.exists) throw Object.assign(new Error("ไม่พบรายการ"), {status: 404});
-          const d = snap.data();
+          const before = await ref.get();
+          if (!before.exists) {
+            throw Object.assign(new Error("ไม่พบรายการ"), {status: 404});
+          }
+          const d = before.data() || {};
 
           // resolve resident name + email from residents collection.
           // Admin-picked name/email override the slip/resident defaults.
@@ -11517,41 +15868,689 @@ exports.pattraPay = onRequest(
           let name = overrideName || d.payerName || "";
           let email = overrideEmail || d.email || "";
           try {
-            const rSnap = await db.collection(RESIDENTS_COLLECTION).get();
-            rSnap.docs.forEach((rd) => {
-              const r = rd.data() || {};
-              if (ppHouseNum(r.house_no || r.houseNo) === d.houseNo) {
-                if (!name) name = r.name || "";
-                if (!email) email = r.email || "";
-              }
-            });
+            const resident = await findPaymentResident(
+                db.collection(RESIDENTS_COLLECTION),
+                d.houseNo,
+            );
+            if (resident) {
+              if (!name) name = resident.name || "";
+              if (!email) email = resident.email || "";
+            }
           } catch (e) { logger.warn("resident resolve failed", e); }
 
-          const receiptNo = `RC-${d.year}-${String(seq).padStart(4, "0")}`;
-          const now = Date.now();
-          const rec = {
-            houseNo: d.houseNo, feeType: d.feeType, period: d.period, year: d.year,
-            amount: d.amount, payerName: name, email, receiptNo, verifiedAt: now,
-          };
-          const html = ppReceiptHtml(rec);
+          const issued = await commitPaymentVerification(db, ref, {
+            planCollection: PP_PLANS_COLLECTION,
+            applyPaymentToPlan,
+            payerName: name,
+            email,
+            verifiedAtMs: Date.now(),
+            serverTimestamp: () =>
+              admin.firestore.FieldValue.serverTimestamp(),
+            renderReceipt: ppReceiptHtml,
+          });
+          if (issued.alreadyIssued) {
+            res.status(200).json({
+              ok: true,
+              receiptNo: issued.receiptNo,
+              emailSent: false,
+              emailReason: "already-issued",
+              alreadyIssued: true,
+              receiptHtml: issued.receiptHtml,
+              installment: issued.installment,
+            });
+            return;
+          }
+
+          const receiptNo = issued.receiptNo;
+          const html = issued.receiptHtml;
           const mail = await ppSendEmail(
               email,
-              `ใบเสร็จรับเงิน ${receiptNo} · ${d.feeType === "common" ? "ค่าส่วนกลาง" : "ค่าจอดรถ"} (${PP_BLOCK}/${d.houseNo})`,
+              "Pattra Villa 8: ใบเสร็จรับเงิน " +
+                `${d.feeType === "common" ? "ค่าส่วนกลาง" : "ค่าจอดรถ"} ` +
+                `บ้านเลขที่ ${PP_BLOCK}/${d.houseNo} ${ppPeriodLabel(d)}`,
               html,
           );
 
           await ref.update({
-            status: "verified",
-            payerName: name,
-            email,
-            receiptNo,
-            receiptHtml: html,
-            verifiedAt: admin.firestore.FieldValue.serverTimestamp(),
             receiptSentAt: mail.sent ? admin.firestore.FieldValue.serverTimestamp() : null,
             emailStatus: mail.sent ? "sent" : `not-sent:${mail.reason}`,
           });
 
-          res.status(200).json({ok: true, receiptNo, emailSent: mail.sent, emailReason: mail.reason || null, receiptHtml: html});
+          res.status(200).json({
+            ok: true,
+            receiptNo,
+            emailSent: mail.sent,
+            emailReason: mail.reason || null,
+            receiptHtml: html,
+            installment: issued.installment,
+          });
+          return;
+        }
+
+        // -------- admin: verify a whole multi-month transfer at once -------
+        // A parking slip that paid several months is stored as one row per
+        // month. The resident made ONE payment, so this approves every month
+        // together and issues a single receipt for the full amount.
+        if (action === "adminVerifyGroup") {
+          await verifyAdminResidentAccess(body);
+          const groupId = String(body.groupId || "").trim();
+          if (!groupId) throw Object.assign(new Error("ไม่ระบุกลุ่มรายการ"), {status: 400});
+
+          const snap = await db.collection(PP_COLLECTION)
+              .where("groupId", "==", groupId).get();
+          if (snap.empty) {
+            throw Object.assign(new Error("ไม่พบรายการของสลิปใบนี้"), {status: 404});
+          }
+          const docs = snap.docs.slice().sort((a, b) => {
+            const ai = Number((a.data() || {}).groupIndex || 0);
+            const bi = Number((b.data() || {}).groupIndex || 0);
+            return ai - bi;
+          });
+          const first = docs[0].data() || {};
+          const last = docs[docs.length - 1].data() || {};
+
+          const overrideName = typeof body.payerName === "string" ? body.payerName.trim() : "";
+          const overrideEmail = typeof body.receiptEmail === "string" ? body.receiptEmail.trim() : "";
+          let name = overrideName || first.payerName || "";
+          let email = overrideEmail || first.email || "";
+          try {
+            const resident = await findPaymentResident(
+                db.collection(RESIDENTS_COLLECTION),
+                first.houseNo,
+            );
+            if (resident) {
+              if (!name) name = resident.name || "";
+              if (!email) email = resident.email || "";
+            }
+          } catch (e) { logger.warn("resident resolve failed", e); }
+
+          const spanLabel = docs.length > 1 ?
+            `${ppPeriodLabel(first)} – ${ppPeriodLabel(last)}` :
+            ppPeriodLabel(first);
+
+          const issued = await commitGroupVerification(
+              db, docs.map((doc) => doc.ref), {
+                payerName: name,
+                email,
+                periodLabel: spanLabel,
+                verifiedAtMs: Date.now(),
+                serverTimestamp: () =>
+                  admin.firestore.FieldValue.serverTimestamp(),
+                renderReceipt: ppReceiptHtml,
+              });
+          if (issued.alreadyIssued) {
+            res.status(200).json({
+              ok: true,
+              receiptNo: issued.receiptNo,
+              emailSent: false,
+              emailReason: "already-issued",
+              alreadyIssued: true,
+              receiptHtml: issued.receiptHtml,
+              months: docs.length,
+            });
+            return;
+          }
+
+          const mail = await ppSendEmail(
+              email,
+              "Pattra Villa 8: ใบเสร็จรับเงิน ค่าจอดรถ " +
+                `บ้านเลขที่ ${PP_BLOCK}/${first.houseNo} ` +
+                `${spanLabel} (${docs.length} เดือน)`,
+              issued.receiptHtml,
+          );
+          await docs[0].ref.update({
+            receiptSentAt: mail.sent ?
+              admin.firestore.FieldValue.serverTimestamp() : null,
+            emailStatus: mail.sent ? "sent" : `not-sent:${mail.reason}`,
+          });
+
+          res.status(200).json({
+            ok: true,
+            receiptNo: issued.receiptNo,
+            emailSent: mail.sent,
+            emailReason: mail.reason || null,
+            receiptHtml: issued.receiptHtml,
+            amount: issued.amount,
+            months: docs.length,
+            periodLabel: spanLabel,
+          });
+          return;
+        }
+
+        // -------- resident: my own verified receipts -----------------------
+        // Resident-level auth (own house + own PIN, no committee requirement).
+        // Lets a logged-in resident pull their house's receipts even if they
+        // never received / can't find the emailed copy.
+        if (action === "myReceipts") {
+          const houseKey = normalizeHouseNo(body.houseNo);
+          const pin = String(body.pin || "");
+          await verifyResidentPinInternal(houseKey, pin);
+          logFeatureUsage("myreceipt", houseKey);
+          const houseNo = ppHouseNum(houseKey);
+          if (!houseNo) {
+            throw Object.assign(new Error("บ้านเลขที่ไม่ถูกต้อง"), {status: 400});
+          }
+          // Single-field query (auto-indexed); status filtered in memory so no
+          // composite index is needed. A house has only a handful of records.
+          const snap = await db.collection(PP_COLLECTION)
+              .where("houseNo", "==", houseNo).get();
+          const receipts = snap.docs
+              .map((doc) => ({doc, d: doc.data() || {}}))
+              // A multi-month transfer has one receipt held by its first
+              // row; the other months point at it and must not list again.
+              .filter(({d}) => d.status === "verified" && d.receiptNo &&
+                !d.receiptRef)
+              .map(({doc, d}) => ({
+                id: doc.id,
+                receiptNo: d.receiptNo || "",
+                feeType: d.feeType || "common",
+                period: d.period || "",
+                // A grouped receipt covers several months and its own total,
+                // not just the month the owning row happens to sit on.
+                periods: Array.isArray(d.receiptPeriods) ? d.receiptPeriods : null,
+                year: d.year || null,
+                amount: Number(
+                    Number.isFinite(d.receiptAmount) ? d.receiptAmount : d.amount || 0,
+                ),
+                payerName: d.payerName || "",
+                bank: d.bank || "",
+                verifiedAt: d.verifiedAt && d.verifiedAt.toMillis ?
+                  d.verifiedAt.toMillis() : null,
+                emailed: !!d.receiptSentAt,
+                nameEditedAt: d.nameEditedAt && d.nameEditedAt.toMillis ?
+                  d.nameEditedAt.toMillis() : null,
+              }))
+              .sort((a, b) => (b.verifiedAt || 0) - (a.verifiedAt || 0));
+          // The address a receipt goes to by default, so the page can show it
+          // instead of asking the resident to type what we already know.
+          let defaultEmail = "";
+          try {
+            const resident = await findPaymentResident(
+                db.collection(RESIDENTS_COLLECTION), houseNo,
+            );
+            defaultEmail = (resident && resident.email) || "";
+          } catch (e) {
+            logger.warn("resident email resolve failed", e);
+          }
+          if (!defaultEmail) {
+            const withEmail = snap.docs
+                .map((doc) => doc.data() || {})
+                .find((d) => d.houseNo === houseNo && d.email);
+            defaultEmail = (withEmail && withEmail.email) || "";
+          }
+          res.status(200).json({ok: true, houseNo, receipts, defaultEmail});
+          return;
+        }
+
+        // -------- resident: send a note with no slip attached --------------
+        // The status page can be wrong (a back-log slip not imported yet, a
+        // transfer sent over LINE). This lets the resident say so.
+        if (action === "submitParkingMessage") {
+          const houseKey = normalizeHouseNo(body.houseNo);
+          const pin = String(body.pin || "");
+          await verifyResidentPinInternal(houseKey, pin);
+          const houseNo = ppHouseNum(houseKey);
+          if (!houseNo) {
+            throw Object.assign(new Error("บ้านเลขที่ไม่ถูกต้อง"), {status: 400});
+          }
+          const message = ppCleanImportText(body.message, 1000);
+          if (!message) {
+            throw Object.assign(new Error("กรุณาพิมพ์ข้อความ"), {status: 400});
+          }
+          const ref = await db.collection(PP_MESSAGES_COLLECTION).add({
+            houseNo,
+            message,
+            feeType: "parking",
+            status: "open",
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          res.status(200).json({ok: true, id: ref.id});
+          return;
+        }
+
+        // -------- admin: counts for the homepage badges --------------------
+        // Counts only — no slip, name or amount leaves this action, so the
+        // landing page never holds payment data it does not need.
+        if (action === "adminPayCounts" || action === "adminParkingCounts") {
+          await verifyAdminResidentAccess(body);
+          const [pendingSnap, msgSnap] = await Promise.all([
+            db.collection(PP_COLLECTION).where("status", "==", "pending").get(),
+            db.collection(PP_MESSAGES_COLLECTION)
+                .where("status", "==", "open").get(),
+          ]);
+          // One transfer covering several months is several rows but one
+          // slip to review, so the badge counts slips.
+          const parkingSlips = new Set();
+          const commonSlips = new Set();
+          pendingSnap.docs.forEach((doc) => {
+            const d = doc.data() || {};
+            const key = d.groupId || doc.id;
+            if (d.feeType === "parking") parkingSlips.add(key);
+            else if (d.feeType === "common") commonSlips.add(key);
+          });
+          const messages = msgSnap.size;
+          res.status(200).json({
+            ok: true,
+            parking: {
+              slips: parkingSlips.size,
+              messages,
+              total: parkingSlips.size + messages,
+            },
+            common: {slips: commonSlips.size, total: commonSlips.size},
+            // Kept for the first version of the parking badge.
+            slips: parkingSlips.size,
+            messages,
+            total: parkingSlips.size + messages,
+          });
+          return;
+        }
+
+        // -------- admin: the resident message inbox ------------------------
+        if (action === "adminListParkingMessages") {
+          await verifyAdminResidentAccess(body);
+          const snap = await db.collection(PP_MESSAGES_COLLECTION)
+              .orderBy("createdAt", "desc").limit(200).get();
+          res.status(200).json({
+            ok: true,
+            messages: snap.docs.map((doc) => {
+              const d = doc.data() || {};
+              return {
+                id: doc.id,
+                houseNo: ppHouseNum(d.houseNo) || 0,
+                message: d.message || "",
+                status: d.status === "done" ? "done" : "open",
+                createdAt: d.createdAt && d.createdAt.toMillis ?
+                  d.createdAt.toMillis() : null,
+                resolvedAt: d.resolvedAt && d.resolvedAt.toMillis ?
+                  d.resolvedAt.toMillis() : null,
+              };
+            }),
+          });
+          return;
+        }
+
+        // -------- admin: mark one message handled (or reopen it) -----------
+        if (action === "adminResolveParkingMessage") {
+          await verifyAdminResidentAccess(body);
+          const id = String(body.id || "");
+          if (!id) {
+            throw Object.assign(new Error("ไม่ระบุข้อความ"), {status: 400});
+          }
+          const done = body.done !== false;
+          await db.collection(PP_MESSAGES_COLLECTION).doc(id).update({
+            status: done ? "done" : "open",
+            resolvedAt: done ?
+              admin.firestore.FieldValue.serverTimestamp() : null,
+          });
+          res.status(200).json({ok: true});
+          return;
+        }
+
+        // -------- resident: one receipt's printable HTML -------------------
+        if (action === "myReceiptDoc") {
+          const houseKey = normalizeHouseNo(body.houseNo);
+          const pin = String(body.pin || "");
+          await verifyResidentPinInternal(houseKey, pin);
+          const houseNo = ppHouseNum(houseKey);
+          const id = String(body.id || "");
+          if (!id) {
+            throw Object.assign(new Error("ไม่ระบุใบเสร็จ"), {status: 400});
+          }
+          const doc = await db.collection(PP_COLLECTION).doc(id).get();
+          if (!doc.exists) {
+            throw Object.assign(new Error("ไม่พบใบเสร็จ"), {status: 404});
+          }
+          const d = doc.data() || {};
+          // Guard against pulling another house's receipt by id.
+          if (ppHouseNum(d.houseNo) !== houseNo || d.status !== "verified") {
+            throw Object.assign(new Error("Unauthorized"), {status: 403});
+          }
+          let html = d.receiptHtml;
+          if (!html) {
+            // Older records issued before receiptHtml was stored — regenerate
+            // from the same template used for the emailed copy.
+            html = ppReceiptHtml({
+              houseNo: d.houseNo,
+              feeType: d.feeType,
+              period: d.period,
+              year: d.year,
+              amount: d.amount,
+              payerName: d.payerName || "",
+              email: d.email || "",
+              receiptNo: d.receiptNo || "",
+              verifiedAt: d.verifiedAt && d.verifiedAt.toMillis ?
+                d.verifiedAt.toMillis() : Date.now(),
+            });
+          }
+          res.status(200).json({
+            ok: true,
+            receiptNo: d.receiptNo || "",
+            receiptHtml: html,
+          });
+          return;
+        }
+
+        // -------- resident: correct the name a receipt is issued in --------
+        // Residents file these for expense claims, so the name has to be
+        // fixable without a committee round-trip. The receipt NUMBER, amount,
+        // period and date never change, and every edit is logged.
+        if (action === "myReceiptRename") {
+          const houseKey = normalizeHouseNo(body.houseNo);
+          const pin = String(body.pin || "");
+          await verifyResidentPinInternal(houseKey, pin);
+          const houseNo = ppHouseNum(houseKey);
+          const id = String(body.id || "");
+          if (!id) {
+            throw Object.assign(new Error("ไม่ระบุใบเสร็จ"), {status: 400});
+          }
+          const name = ppCleanImportText(body.name, 120).replace(/[<>]/g, "");
+          if (!name) {
+            throw Object.assign(new Error("กรุณากรอกชื่อ"), {status: 400});
+          }
+          const ref = db.collection(PP_COLLECTION).doc(id);
+          const doc = await ref.get();
+          if (!doc.exists) {
+            throw Object.assign(new Error("ไม่พบใบเสร็จ"), {status: 404});
+          }
+          const d = doc.data() || {};
+          if (ppHouseNum(d.houseNo) !== houseNo || d.status !== "verified") {
+            throw Object.assign(new Error("Unauthorized"), {status: 403});
+          }
+          const before = d.payerName || "";
+          if (before === name) {
+            res.status(200).json({ok: true, payerName: name, unchanged: true});
+            return;
+          }
+
+          // Re-render the stored document with the new name, keeping every
+          // other field exactly as it was issued.
+          const html = ppReceiptHtml({
+            houseNo: d.houseNo,
+            feeType: d.feeType,
+            period: d.period,
+            periods: Array.isArray(d.receiptPeriods) ? d.receiptPeriods : null,
+            year: d.year,
+            amount: Number.isFinite(d.receiptAmount) ?
+              d.receiptAmount : d.amount,
+            payerName: name,
+            email: d.email || "",
+            receiptNo: d.receiptNo || "",
+            verifiedAt: d.verifiedAt && d.verifiedAt.toMillis ?
+              d.verifiedAt.toMillis() : Date.now(),
+          });
+          await db.collection(PP_RECEIPT_LOG_COLLECTION).add({
+            paymentId: id,
+            receiptNo: d.receiptNo || "",
+            houseNo,
+            // So each committee page can show only its own fee type.
+            feeType: d.feeType || "",
+            field: "payerName",
+            from: before,
+            to: name,
+            by: "resident",
+            byHouseNo: houseNo,
+            at: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          await ref.update({
+            payerName: name,
+            receiptHtml: html,
+            nameEditedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          res.status(200).json({ok: true, payerName: name});
+          return;
+        }
+
+        // -------- admin: the receipt edit trail ----------------------------
+        if (action === "adminListReceiptLog") {
+          await verifyAdminResidentAccess(body);
+          const snap = await db.collection(PP_RECEIPT_LOG_COLLECTION)
+              .orderBy("at", "desc").limit(300).get();
+          res.status(200).json({
+            ok: true,
+            entries: snap.docs.map((doc) => {
+              const d = doc.data() || {};
+              return {
+                id: doc.id,
+                paymentId: d.paymentId || "",
+                receiptNo: d.receiptNo || "",
+                houseNo: ppHouseNum(d.houseNo) || 0,
+                feeType: d.feeType || "",
+                field: d.field || "",
+                from: d.from || "",
+                to: d.to || "",
+                by: d.by || "",
+                at: d.at && d.at.toMillis ? d.at.toMillis() : null,
+              };
+            }),
+          });
+          return;
+        }
+
+        // -------- resident: email one receipt to themselves ----------------
+        // Defaults to the address on file for the house; an override is
+        // accepted for the case where the receipt has to go somewhere else
+        // (an accountant, a landlord, a second address).
+        if (action === "myReceiptEmail") {
+          const houseKey = normalizeHouseNo(body.houseNo);
+          const pin = String(body.pin || "");
+          await verifyResidentPinInternal(houseKey, pin);
+          const houseNo = ppHouseNum(houseKey);
+          const id = String(body.id || "");
+          if (!id) {
+            throw Object.assign(new Error("ไม่ระบุใบเสร็จ"), {status: 400});
+          }
+          const ref = db.collection(PP_COLLECTION).doc(id);
+          const doc = await ref.get();
+          if (!doc.exists) {
+            throw Object.assign(new Error("ไม่พบใบเสร็จ"), {status: 404});
+          }
+          const d = doc.data() || {};
+          if (ppHouseNum(d.houseNo) !== houseNo || d.status !== "verified") {
+            throw Object.assign(new Error("Unauthorized"), {status: 403});
+          }
+
+          const override = String(body.email || "").trim();
+          let to = override || d.email || "";
+          if (!override && !to) {
+            try {
+              const resident = await findPaymentResident(
+                  db.collection(RESIDENTS_COLLECTION), d.houseNo,
+              );
+              to = (resident && resident.email) || "";
+            } catch (e) {
+              logger.warn("resident email resolve failed", e);
+            }
+          }
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+            throw Object.assign(
+                new Error(override ?
+                  "อีเมลไม่ถูกต้อง" :
+                  "บ้านนี้ยังไม่มีอีเมลในระบบ กรุณาระบุอีเมลปลายทาง"),
+                {status: 400},
+            );
+          }
+
+          const html = d.receiptHtml || ppReceiptHtml({
+            houseNo: d.houseNo,
+            feeType: d.feeType,
+            period: d.period,
+            year: d.year,
+            amount: d.amount,
+            payerName: d.payerName || "",
+            email: d.email || "",
+            receiptNo: d.receiptNo || "",
+            verifiedAt: d.verifiedAt && d.verifiedAt.toMillis ?
+              d.verifiedAt.toMillis() : Date.now(),
+          });
+          const mail = await ppSendEmail(
+              to,
+              "Pattra Villa 8: ใบเสร็จรับเงิน " +
+                `${d.feeType === "common" ? "ค่าส่วนกลาง" : "ค่าจอดรถ"} ` +
+                `บ้านเลขที่ ${PP_BLOCK}/${d.houseNo} ${ppPeriodLabel(d)}`,
+              html,
+          );
+          if (!mail.sent) {
+            throw Object.assign(
+                new Error("ส่งอีเมลไม่สำเร็จ กรุณาลองใหม่"), {status: 502});
+          }
+          const patch = {
+            lastEmailedAt: admin.firestore.FieldValue.serverTimestamp(),
+          };
+          // The list shows "ส่งอีเมลแล้ว" off receiptSentAt; a receipt issued
+          // before the house had an address should start showing it now.
+          if (!d.receiptSentAt) {
+            patch.receiptSentAt = admin.firestore.FieldValue.serverTimestamp();
+          }
+          await ref.update(patch);
+          res.status(200).json({ok: true, to});
+          return;
+        }
+
+        // -------- admin: installment plans ---------------------------------
+        if (action === "adminListPlans") {
+          await verifyAdminResidentAccess(body);
+          const snap = await db.collection(PP_PLANS_COLLECTION).get();
+          const plans = snap.docs.map(ppMapPlan)
+              .map((plan) => Object.assign({}, plan, planProgress(plan)))
+              .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+          res.status(200).json({ok: true, plans});
+          return;
+        }
+
+        if (action === "adminCreatePlan") {
+          const access = await verifyAdminResidentAccess(body);
+          const houseNo = ppHouseNum(body.houseNo);
+          if (!houseNo) {
+            throw Object.assign(new Error("บ้านเลขที่ไม่ถูกต้อง"), {status: 400});
+          }
+          const period = normalizeCommonPeriod(
+              body.period, PP_PUBLIC_COMMON_PERIOD);
+          const year = Number.isFinite(parseInt(body.year, 10)) ?
+            parseInt(body.year, 10) : PP_PUBLIC_COMMON_YEAR;
+          const input = validatePlanInput({
+            totalAmount: body.totalAmount == null ?
+              PP_COMMON_BASE : body.totalAmount,
+          });
+          const planRef = db.collection(PP_PLANS_COLLECTION)
+              .doc(ppPlanId(houseNo, "common", period, year));
+          const existing = await planRef.get();
+          if (existing.exists) {
+            throw Object.assign(
+                new Error(`บ้าน ${PP_BLOCK}/${houseNo} เคยมีแผนผ่อนงวดนี้แล้ว`),
+                {status: 409});
+          }
+          const paidSnap = await db.collection(PP_COLLECTION)
+              .where("houseNo", "==", houseNo).get();
+          const settled = paidSnap.docs.some((doc) => {
+            const data = doc.data() || {};
+            return data.feeType === "common" && data.period === period &&
+              Number(data.year) === Number(year) &&
+              data.status === "verified" && !data.planId;
+          });
+          if (settled) {
+            throw Object.assign(
+                new Error(`บ้าน ${PP_BLOCK}/${houseNo} ชำระงวดนี้ครบแล้ว`),
+                {status: 409});
+          }
+          const plan = {
+            houseNo,
+            feeType: "common",
+            period,
+            year,
+            totalAmount: input.totalAmount,
+            paidAmount: 0,
+            appliedPaymentIds: [],
+            status: "active",
+            note: ppCleanImportText(body.note, 500),
+            createdBy: normalizeHouseNo(body.adminHouseNo || ""),
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          };
+          await planRef.set(plan);
+          logger.info("pattraPay installment plan created", {
+            planId: planRef.id,
+            houseNo,
+            period,
+            year,
+            totalAmount: input.totalAmount,
+            by: access && access.houseNo || "",
+          });
+          res.status(200).json({
+            ok: true,
+            plan: Object.assign({id: planRef.id}, plan, {createdAt: Date.now()}),
+          });
+          return;
+        }
+
+        if (action === "adminRecordPlanPayment") {
+          await verifyAdminResidentAccess(body);
+          const planId = String(body.planId || "");
+          if (!planId) {
+            throw Object.assign(new Error("ไม่ระบุแผน"), {status: 400});
+          }
+          const amount = Math.round(Number(body.amount) * 100) / 100;
+          if (!Number.isFinite(amount) || amount <= 0) {
+            throw Object.assign(new Error("ยอดเงินไม่ถูกต้อง"), {status: 400});
+          }
+          const planSnap = await db.collection(PP_PLANS_COLLECTION)
+              .doc(planId).get();
+          if (!planSnap.exists) {
+            throw Object.assign(new Error("ไม่พบแผนผ่อน"), {status: 404});
+          }
+          const plan = ppMapPlan(planSnap);
+          if (!isPlanActive(plan)) {
+            throw Object.assign(new Error("แผนนี้ไม่ได้ใช้งานอยู่"), {status: 400});
+          }
+          const pendingSnap = await db.collection(PP_COLLECTION)
+              .where("houseNo", "==", plan.houseNo).get();
+          const hasPending = pendingSnap.docs.some((doc) => {
+            const payment = doc.data() || {};
+            return payment.planId === planId && payment.status === "pending";
+          });
+          if (hasPending) {
+            throw Object.assign(
+                new Error("แผนนี้มีรายการรอตรวจอยู่แล้ว"), {status: 409});
+          }
+          const ref = db.collection(PP_COLLECTION).doc();
+          await ref.set({
+            houseNo: plan.houseNo,
+            feeType: "common",
+            period: plan.period,
+            year: plan.year,
+            amount,
+            payerName: ppCleanImportText(body.payerName, 160),
+            email: "",
+            slipUrl: "",
+            status: "pending",
+            source: "bank_statement",
+            bank: ppCleanImportText(body.bank, 80),
+            transactionRef: ppCleanImportText(body.transactionRef, 120),
+            paidAt: ppTimestampFromMillis(body.paidAt),
+            reviewNote: ppCleanImportText(body.note, 500) ||
+              "บันทึกจาก statement — ลูกบ้านไม่ได้ส่งสลิป",
+            planId,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          res.status(200).json({ok: true, id: ref.id, amount});
+          return;
+        }
+
+        if (action === "adminClosePlan") {
+          await verifyAdminResidentAccess(body);
+          const planId = String(body.planId || "");
+          if (!planId) {
+            throw Object.assign(new Error("ไม่ระบุแผน"), {status: 400});
+          }
+          const planRef = db.collection(PP_PLANS_COLLECTION).doc(planId);
+          const snap = await planRef.get();
+          if (!snap.exists) {
+            throw Object.assign(new Error("ไม่พบแผนผ่อน"), {status: 404});
+          }
+          await planRef.update({
+            status: "closed",
+            closeReason: ppCleanImportText(body.reason, 500),
+            closedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          res.status(200).json({ok: true, planId});
           return;
         }
 
@@ -11576,23 +16575,728 @@ exports.pattraPay = onRequest(
       }
     });
 
+
 // ===========================================================================
-// Pure Visitor Intake helpers exported for unit tests (functions/test/).
-// These are side-effect-free; the export adds no runtime behaviour.
+// ESTATE ISSUES — pattra8.com/report/
+// Login-gated issue / suggestion / feedback channel. See
+// functions/domains/issues/README.md for the data model and the two
+// invariants (anonymity, LINE containment) this code has to protect.
+// ===========================================================================
+
+const ESTATE_ISSUE_STORAGE_PREFIX = "estate-issues";
+const ESTATE_ISSUE_ADMIN_PERMISSION = "admin.issues";
+const ESTATE_ISSUE_LIST_LIMIT = 300;
+const ESTATE_ISSUE_MEDIA_RETENTION_DAYS = 365;
+
+/**
+ * Allocates the next per-year ticket number.
+ * @param {number} buddhistYear Buddhist-era year.
+ * @return {Promise<string>} Ticket code such as "PT-2569-0007".
+ */
+async function allocateIssueCode(buddhistYear) {
+  const ref = db
+      .collection(ESTATE_ISSUE_COUNTERS_COLLECTION)
+      .doc(String(buddhistYear));
+  const sequence = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const next = Number((snap.exists ? snap.data().seq : 0) || 0) + 1;
+    tx.set(ref, {seq: next, year: buddhistYear}, {merge: true});
+    return next;
+  });
+  return formatIssueCode(buddhistYear, sequence);
+}
+
+/**
+ * Loads every issue filed by one house, newest first.
+ *
+ * Sorting happens in memory on purpose: an equality filter plus an ordered
+ * range would need a composite index, and one house never has more than a
+ * handful of reports.
+ *
+ * @param {string} houseNo Normalized house number.
+ * @return {Promise<Array<{id: string, data: Object}>>}
+ */
+async function loadIssuesForHouse(houseNo) {
+  const snap = await db
+      .collection(ESTATE_ISSUES_COLLECTION)
+      .where("houseNo", "==", houseNo)
+      .limit(ESTATE_ISSUE_LIST_LIMIT)
+      .get();
+  return snap.docs
+      .map((doc) => ({id: doc.id, data: doc.data() || {}}))
+      .sort((a, b) =>
+        Number(b.data.createdAtEpoch || 0) - Number(a.data.createdAtEpoch || 0),
+      );
+}
+
+/**
+ * Loads an issue and confirms the caller filed it.
+ * @param {string} issueId Firestore document id.
+ * @param {string} houseNo Normalized house number of the caller.
+ * @return {Promise<{ref: *, data: Object}>}
+ */
+async function loadOwnedIssue(issueId, houseNo) {
+  const id = String(issueId || "").trim();
+  if (!id) throw issueError("ไม่พบเรื่องที่ระบุ", 400);
+  const ref = db.collection(ESTATE_ISSUES_COLLECTION).doc(id);
+  const snap = await ref.get();
+  if (!snap.exists) throw issueError("ไม่พบเรื่องที่ระบุ", 404);
+  const data = snap.data() || {};
+  if (String(data.houseNo || "") !== houseNo) {
+    throw issueError("ไม่มีสิทธิ์เข้าถึงเรื่องนี้", 403);
+  }
+  return {ref, data};
+}
+
+/**
+ * Loads an issue for committee handling.
+ * @param {string} issueId Firestore document id.
+ * @return {Promise<{ref: *, data: Object}>}
+ */
+async function loadIssueForAdmin(issueId) {
+  const id = String(issueId || "").trim();
+  if (!id) throw issueError("ไม่พบเรื่องที่ระบุ", 400);
+  const ref = db.collection(ESTATE_ISSUES_COLLECTION).doc(id);
+  const snap = await ref.get();
+  if (!snap.exists) throw issueError("ไม่พบเรื่องที่ระบุ", 404);
+  return {ref, data: snap.data() || {}};
+}
+
+/**
+ * Stores one attachment in Storage and returns its stored descriptor.
+ *
+ * Objects stay private and are read through a download token, because the
+ * gen2 runtime service account cannot sign URLs.
+ *
+ * @param {string} issueId Firestore document id.
+ * @param {Object} upload Parsed upload from parseIssueUpload().
+ * @return {Promise<Object>}
+ */
+async function storeIssueAttachment(issueId, upload) {
+  const bucket = admin.storage().bucket();
+  const token = crypto.randomUUID();
+  const objectPath = `${ESTATE_ISSUE_STORAGE_PREFIX}/${issueId}/` +
+    `${Date.now()}-${crypto.randomUUID().slice(0, 8)}.${upload.extension}`;
+
+  await bucket.file(objectPath).save(upload.buffer, {
+    resumable: false,
+    contentType: upload.contentType,
+    metadata: {
+      contentType: upload.contentType,
+      metadata: {firebaseStorageDownloadTokens: token},
+    },
+  });
+
+  return {
+    kind: upload.kind,
+    contentType: upload.contentType,
+    bytes: upload.bytes,
+    storagePath: objectPath,
+    url: "https://firebasestorage.googleapis.com/v0/b/" +
+      `${bucket.name}/o/${encodeURIComponent(objectPath)}?alt=media&` +
+      `token=${token}`,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Announces a new report in the Pattra Watch sandbox group.
+ *
+ * The target is hardcoded on purpose. Routing it through
+ * resolveLineFlexTargetId() would let the stored `pattraReport` route send an
+ * estate complaint into a residents or security group, which would defeat the
+ * anonymity promise made on the form. Failures are swallowed: a chat notice is
+ * never worth failing a resident's submission.
+ *
+ * @param {Object} issue Stored issue document.
+ * @return {Promise<void>}
+ */
+async function announceIssueToWatchGroup(issue) {
+  try {
+    const bangkokTime = new Date().toLocaleString("th-TH", {
+      timeZone: "Asia/Bangkok",
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+    const message = buildIssueWatchNotice(issue, bangkokTime);
+    await sendLinePushMessages(LINE_FLEX_SANDBOX_TARGET_ID, [message]);
+  } catch (err) {
+    logger.warn("estateIssues watch notice failed", err);
+  }
+}
+
+/**
+ * Moves one legacy issue's inline base64 media into Storage.
+ *
+ * The retired board stored whole photos as data URLs inside the Firestore
+ * document, which is why a handful of tickets accounted for most of the
+ * database. The archive keeps the picture but not the encoding mistake.
+ *
+ * @param {string} archiveId Archive document id.
+ * @param {Array<Object>} media Legacy media entries.
+ * @return {Promise<Array<Object>>} Stored attachment descriptors.
+ */
+async function migrateLegacyIssueMedia(archiveId, media) {
+  const list = Array.isArray(media) ? media : [];
+  const stored = [];
+  for (let index = 0; index < list.length; index += 1) {
+    const entry = list[index] || {};
+    try {
+      const upload = parseIssueUpload(entry.dataUrl);
+      stored.push(await storeIssueAttachment(`archive/${archiveId}`, upload));
+    } catch (err) {
+      logger.warn("archiveLegacy media skipped", {
+        archiveId,
+        index,
+        error: err.message,
+      });
+    }
+  }
+  return stored;
+}
+
+exports.estateIssues = onRequest(
+    {secrets: [LINE_CHANNEL_ACCESS_TOKEN]},
+    async (req, res) => {
+      if (!prepareJsonRequest(req, res)) return;
+
+      const body = req.body || {};
+      const action = String(body.action || "").trim();
+
+      try {
+        // ── Resident actions ────────────────────────────────────────────
+        if (action === "submit") {
+          const houseNo = normalizeHouseNo(body.houseNo);
+          await verifyResidentPinInternal(houseNo, body.pin);
+          const submission = buildIssueSubmission(body);
+          const existing = await loadIssuesForHouse(houseNo);
+          const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+          const recent = existing.filter((item) =>
+            Number(item.data.createdAtEpoch || 0) >= dayAgo,
+          ).length;
+          if (isIssueRateLimited(recent)) {
+            throw issueError(
+                "วันนี้แจ้งครบจำนวนสูงสุดแล้ว กรุณาลองใหม่พรุ่งนี้",
+                429,
+            );
+          }
+
+          const now = new Date();
+          const code = await allocateIssueCode(issueBuddhistYear(now));
+          const doc = {
+            code,
+            houseNo,
+            anonymous: submission.anonymous,
+            title: submission.title,
+            detail: submission.detail,
+            category: submission.category,
+            priority: submission.priority,
+            contact: normalizeIssueText(body.contact, 120),
+            status: "new",
+            attachments: [],
+            replies: [],
+            internalNotes: [],
+            residentSeenAtEpoch: now.getTime(),
+            createdAtEpoch: now.getTime(),
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          };
+          const ref = await db
+              .collection(ESTATE_ISSUES_COLLECTION)
+              .add(doc);
+
+          writeAuditLog("estate_issue_submit", houseNo, {
+            code,
+            anonymous: submission.anonymous,
+            category: submission.category,
+          });
+          await announceIssueToWatchGroup(doc);
+
+          res.status(200).json({ok: true, id: ref.id, code});
+          return;
+        }
+
+        if (action === "attach") {
+          const houseNo = normalizeHouseNo(body.houseNo);
+          await verifyResidentPinInternal(houseNo, body.pin);
+          const {ref, data} = await loadOwnedIssue(body.issueId, houseNo);
+          if (!isResidentIssueEditable(data.status)) {
+            throw issueError("เรื่องนี้สิ้นสุดแล้ว ไม่สามารถแก้ไขได้", 409);
+          }
+          const upload = parseIssueUpload(body.dataUrl);
+          assertAttachmentSlotAvailable(data.attachments, upload.kind);
+          const attachment = await storeIssueAttachment(ref.id, upload);
+          await ref.update({
+            attachments: admin.firestore.FieldValue.arrayUnion(attachment),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          res.status(200).json({ok: true, attachment});
+          return;
+        }
+
+        if (action === "updateIssue") {
+          const houseNo = normalizeHouseNo(body.houseNo);
+          await verifyResidentPinInternal(houseNo, body.pin);
+          const {ref, data} = await loadOwnedIssue(body.issueId, houseNo);
+          if (!isResidentIssueEditable(data.status)) {
+            throw issueError("เรื่องนี้สิ้นสุดแล้ว ไม่สามารถแก้ไขได้", 409);
+          }
+          const submission = buildIssueSubmission({
+            title: body.title,
+            detail: body.detail,
+            category: body.category,
+          });
+          await ref.update({
+            title: submission.title,
+            detail: submission.detail,
+            category: submission.category,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          writeAuditLog("estate_issue_resident_update", houseNo, {
+            issueId: ref.id,
+            category: submission.category,
+          });
+          res.status(200).json({ok: true});
+          return;
+        }
+
+        if (action === "removeAttachment") {
+          const houseNo = normalizeHouseNo(body.houseNo);
+          await verifyResidentPinInternal(houseNo, body.pin);
+          const {ref, data} = await loadOwnedIssue(body.issueId, houseNo);
+          if (!isResidentIssueEditable(data.status)) {
+            throw issueError("เรื่องนี้สิ้นสุดแล้ว ไม่สามารถแก้ไขได้", 409);
+          }
+          const storagePath = String(body.storagePath || "").trim();
+          const attachments = Array.isArray(data.attachments) ?
+            data.attachments : [];
+          const attachment = attachments.find((item) =>
+            item && String(item.storagePath || "") === storagePath,
+          );
+          if (!attachment) throw issueError("ไม่พบไฟล์แนบที่ระบุ", 404);
+          const expectedPrefix = `${ESTATE_ISSUE_STORAGE_PREFIX}/${ref.id}/`;
+          if (!storagePath.startsWith(expectedPrefix)) {
+            throw issueError("ไม่สามารถลบไฟล์นี้ได้", 403);
+          }
+          await admin.storage().bucket().file(storagePath).delete()
+              .catch((err) => {
+                if (Number(err.code) !== 404) throw err;
+              });
+          await ref.update({
+            attachments: attachments.filter((item) =>
+              String((item && item.storagePath) || "") !== storagePath,
+            ),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          writeAuditLog("estate_issue_attachment_remove", houseNo, {
+            issueId: ref.id,
+            storagePath,
+          });
+          res.status(200).json({ok: true});
+          return;
+        }
+
+        if (action === "myIssues") {
+          const houseNo = normalizeHouseNo(body.houseNo);
+          await verifyResidentPinInternal(houseNo, body.pin);
+          logFeatureUsage("report", houseNo);
+          const issues = await loadIssuesForHouse(houseNo);
+          res.status(200).json({
+            ok: true,
+            issues: issues.map((item) =>
+              toResidentIssueView(item.id, item.data),
+            ),
+          });
+          return;
+        }
+
+        if (action === "addComment") {
+          const houseNo = normalizeHouseNo(body.houseNo);
+          await verifyResidentPinInternal(houseNo, body.pin);
+          const {ref, data} = await loadOwnedIssue(body.issueId, houseNo);
+          const message = normalizeIssueText(body.message, ISSUE_COMMENT_MAX);
+          if (!message) throw issueError("กรุณาพิมพ์ข้อความ", 400);
+          const now = Date.now();
+          const commentUpdate = {
+            replies: admin.firestore.FieldValue.arrayUnion({
+              id: crypto.randomUUID(),
+              author: "resident",
+              message,
+              createdAt: new Date(now).toISOString(),
+              createdAtEpoch: now,
+            }),
+            residentSeenAtEpoch: now,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          };
+          if (data.status === "resolved" || data.status === "closed") {
+            commentUpdate.status = "in_progress";
+            commentUpdate.resolvedAt = null;
+          }
+          await ref.update(commentUpdate);
+          res.status(200).json({ok: true});
+          return;
+        }
+
+        if (action === "markSeen") {
+          const houseNo = normalizeHouseNo(body.houseNo);
+          await verifyResidentPinInternal(houseNo, body.pin);
+          const {ref} = await loadOwnedIssue(body.issueId, houseNo);
+          await ref.update({residentSeenAtEpoch: Date.now()});
+          res.status(200).json({ok: true});
+          return;
+        }
+
+        // ── Committee actions ───────────────────────────────────────────
+        if (action === "adminList") {
+          await verifyAdminResidentAccess(body, ESTATE_ISSUE_ADMIN_PERMISSION);
+          const snap = await db
+              .collection(ESTATE_ISSUES_COLLECTION)
+              .orderBy("createdAtEpoch", "desc")
+              .limit(ESTATE_ISSUE_LIST_LIMIT)
+              .get();
+          const all = snap.docs.map((doc) =>
+            redactIssueForAdmin(doc.id, doc.data() || {}),
+          );
+          const status = String(body.status || "").trim();
+          const category = String(body.category || "").trim();
+          const search = String(body.search || "").trim().toLowerCase();
+          const issues = all.filter((issue) => {
+            if (status && issue.status !== status) return false;
+            if (category && issue.category !== category) return false;
+            if (search) {
+              const haystack = `${issue.code} ${issue.title} ${issue.detail}`
+                  .toLowerCase();
+              if (!haystack.includes(search)) return false;
+            }
+            return true;
+          });
+          res.status(200).json({
+            ok: true,
+            issues,
+            stats: summarizeIssueStatuses(all),
+          });
+          return;
+        }
+
+        // Counts only — the landing page shows an open-ticket badge and has
+        // no business pulling resident free text across the wire for it.
+        if (action === "adminStats") {
+          await verifyAdminResidentAccess(body, ESTATE_ISSUE_ADMIN_PERMISSION);
+          const collection = db.collection(ESTATE_ISSUES_COLLECTION);
+          const [fresh, working] = await Promise.all([
+            collection.where("status", "==", "new").count().get(),
+            collection.where("status", "==", "in_progress").count().get(),
+          ]);
+          const newCount = fresh.data().count || 0;
+          const inProgress = working.data().count || 0;
+          res.status(200).json({
+            ok: true,
+            stats: {
+              "new": newCount,
+              "in_progress": inProgress,
+              "open": newCount + inProgress,
+            },
+          });
+          return;
+        }
+
+        if (action === "adminDetail") {
+          await verifyAdminResidentAccess(body, ESTATE_ISSUE_ADMIN_PERMISSION);
+          const {ref, data} = await loadIssueForAdmin(body.issueId);
+          res.status(200).json({
+            ok: true,
+            issue: redactIssueForAdmin(ref.id, data),
+          });
+          return;
+        }
+
+        if (action === "adminReply") {
+          const access = await verifyAdminResidentAccess(
+              body,
+              ESTATE_ISSUE_ADMIN_PERMISSION,
+          );
+          const {ref, data} = await loadIssueForAdmin(body.issueId);
+          const message = normalizeIssueText(body.message, ISSUE_COMMENT_MAX);
+          if (!message) throw issueError("กรุณาพิมพ์ข้อความตอบกลับ", 400);
+          const now = Date.now();
+          const replyUpdate = {
+            replies: admin.firestore.FieldValue.arrayUnion({
+              id: crypto.randomUUID(),
+              author: "admin",
+              message,
+              createdAt: new Date(now).toISOString(),
+              createdAtEpoch: now,
+            }),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          };
+          if (issueQueueState(data) === "needs_action") {
+            replyUpdate.status = "in_progress";
+          }
+          await ref.update(replyUpdate);
+          writeAuditLog("estate_issue_reply", access.houseNo || "", {
+            issueId: ref.id,
+          });
+          res.status(200).json({ok: true});
+          return;
+        }
+
+        if (action === "adminUpdate") {
+          const access = await verifyAdminResidentAccess(
+              body,
+              ESTATE_ISSUE_ADMIN_PERMISSION,
+          );
+          const {ref, data} = await loadIssueForAdmin(body.issueId);
+          const update = {
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          };
+          if (body.status !== undefined) {
+            const status = normalizeIssueStatus(body.status);
+            update.status = status;
+            const closing = status === "resolved" || status === "closed";
+            if (closing && !data.resolvedAt) {
+              update.resolvedAt = new Date().toISOString();
+            }
+            if (!closing) update.resolvedAt = null;
+          }
+          if (body.priority !== undefined) {
+            update.priority = normalizeIssuePriority(body.priority);
+          }
+          await ref.update(update);
+          writeAuditLog("estate_issue_update", access.houseNo || "", {
+            issueId: ref.id,
+            status: update.status || "",
+            priority: update.priority || "",
+          });
+          res.status(200).json({ok: true});
+          return;
+        }
+
+        // Removing a report is the one committee action that cannot be
+        // undone, so it takes the whole record with it: the document and every
+        // stored attachment. The audit log keeps ticket code and title as the
+        // trail; the reporter's house number is deliberately not written there,
+        // because an anonymous report stays anonymous even in the log.
+        if (action === "adminDelete") {
+          const access = await verifyAdminResidentAccess(
+              body,
+              ESTATE_ISSUE_ADMIN_PERMISSION,
+          );
+          const {ref, data} = await loadIssueForAdmin(body.issueId);
+          const attachments = Array.isArray(data.attachments) ?
+            data.attachments :
+            [];
+          const bucket = admin.storage().bucket();
+          let removed = 0;
+          for (const attachment of attachments) {
+            if (!attachment || !attachment.storagePath) continue;
+            try {
+              await bucket.file(attachment.storagePath).delete();
+              removed += 1;
+            } catch (err) {
+              logger.warn("estateIssues attachment delete failed", {
+                storagePath: attachment.storagePath,
+                error: err.message,
+              });
+            }
+          }
+          await ref.delete();
+          writeAuditLog("estate_issue_delete", access.houseNo || "", {
+            issueId: ref.id,
+            code: String(data.code || ""),
+            title: String(data.title || ""),
+            media: removed,
+          });
+          res.status(200).json({ok: true});
+          return;
+        }
+
+        if (action === "adminNote") {
+          const access = await verifyAdminResidentAccess(
+              body,
+              ESTATE_ISSUE_ADMIN_PERMISSION,
+          );
+          const {ref} = await loadIssueForAdmin(body.issueId);
+          const message = normalizeIssueText(
+              body.message,
+              ISSUE_INTERNAL_NOTE_MAX,
+          );
+          if (!message) throw issueError("กรุณาพิมพ์บันทึกภายใน", 400);
+          const now = Date.now();
+          await ref.update({
+            internalNotes: admin.firestore.FieldValue.arrayUnion({
+              id: crypto.randomUUID(),
+              message,
+              authorHouseNo: access.houseNo || "",
+              createdAt: new Date(now).toISOString(),
+              createdAtEpoch: now,
+            }),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          res.status(200).json({ok: true});
+          return;
+        }
+
+        if (action === "adminArchiveList") {
+          await verifyAdminResidentAccess(body, ESTATE_ISSUE_ADMIN_PERMISSION);
+          const snap = await db
+              .collection(ISSUES_ARCHIVE_COLLECTION)
+              .limit(ESTATE_ISSUE_LIST_LIMIT)
+              .get();
+          const issues = snap.docs
+              .map((doc) => {
+                const data = doc.data() || {};
+                return {
+                  id: doc.id,
+                  source: String(data.source || ""),
+                  date: String(data.date || ""),
+                  house: String(data.house || ""),
+                  title: String(data.title || ""),
+                  detail: String(data.desc || data.detail || ""),
+                  category: String(data.cat || ""),
+                  status: String(data.status || ""),
+                  attachments: Array.isArray(data.attachments) ?
+                    data.attachments :
+                    [],
+                  archivedAt: String(data.archivedAt || ""),
+                };
+              })
+              .sort((a, b) => b.archivedAt.localeCompare(a.archivedAt));
+          res.status(200).json({ok: true, issues});
+          return;
+        }
+
+        if (action === "archiveLegacy") {
+          const access = await verifyAdminResidentAccess(body, "admin.audit");
+          const deleteOriginals = body.deleteOriginals === true;
+          const sources = ["issues", "private_issues"];
+          const result = {archived: 0, media: 0, deleted: 0, sources: {}};
+
+          for (const source of sources) {
+            const snap = await db.collection(source).get();
+            let archived = 0;
+            let deleted = 0;
+            for (const doc of snap.docs) {
+              const data = doc.data() || {};
+              const archiveId = `${source}_${doc.id}`;
+              const attachments =
+                await migrateLegacyIssueMedia(archiveId, data.media);
+              const {media, ...rest} = data;
+              await db.collection(ISSUES_ARCHIVE_COLLECTION)
+                  .doc(archiveId)
+                  .set({
+                    ...rest,
+                    source,
+                    originalId: doc.id,
+                    attachments,
+                    archivedAt: new Date().toISOString(),
+                  }, {merge: true});
+              archived += 1;
+              result.media += attachments.length;
+              if (deleteOriginals) {
+                await doc.ref.delete();
+                deleted += 1;
+              }
+            }
+            result.archived += archived;
+            result.deleted += deleted;
+            result.sources[source] = {archived, deleted};
+          }
+
+          writeAuditLog("estate_issue_archive_legacy", access.houseNo || "", {
+            archived: result.archived,
+            deleted: result.deleted,
+            media: result.media,
+          });
+          res.status(200).json({ok: true, ...result});
+          return;
+        }
+
+        res.status(400).json({ok: false, error: "Invalid action"});
+      } catch (err) {
+        if (!err.status || err.status >= 500) {
+          logger.error("estateIssues failed", {action, error: err.message});
+        }
+        sendLegacyError(res, err);
+      }
+    },
+);
+
+exports.estateIssueCleanup = onSchedule(
+    {
+      schedule: "30 3 * * *",
+      timeZone: "Asia/Bangkok",
+      memory: "512MiB",
+    },
+    async () => {
+      const cutoff = Date.now() -
+        ESTATE_ISSUE_MEDIA_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+      const snap = await db
+          .collection(ESTATE_ISSUES_COLLECTION)
+          .where("createdAtEpoch", "<", cutoff)
+          .limit(200)
+          .get();
+
+      const bucket = admin.storage().bucket();
+      let purged = 0;
+      for (const doc of snap.docs) {
+        const data = doc.data() || {};
+        const attachments = Array.isArray(data.attachments) ?
+          data.attachments :
+          [];
+        if (!attachments.length) continue;
+        for (const attachment of attachments) {
+          if (!attachment || !attachment.storagePath) continue;
+          try {
+            await bucket.file(attachment.storagePath).delete();
+            purged += 1;
+          } catch (err) {
+            logger.warn("estateIssueCleanup delete failed", {
+              storagePath: attachment.storagePath,
+              error: err.message,
+            });
+          }
+        }
+        // The ticket text stays; only the media ages out.
+        await doc.ref.update({
+          attachments: [],
+          attachmentsPurgedAt: new Date().toISOString(),
+        });
+      }
+
+      logger.info("estateIssueCleanup finished", {
+        scanned: snap.size,
+        purged,
+      });
+    },
+);
+
+// ===========================================================================
+// Visitor Intake helpers exported for unit tests (functions/test/).
+// Recovery/session tests inject an in-memory store; no production I/O.
 // ===========================================================================
 module.exports.__visitorTest = {
+  recoverVisitorIntakeOcr,
+  resolveVisitorIntakeLogId,
   getCarQuota,
   mapVisitorPurposeCategory,
   visitorPurposeLabel,
+  visitorReportPurposeLabel,
   parseVisitorIntakeText,
+  buildVisitorWarnings,
   cleanVisitorPurposeText,
   normalizeVisitorPlate,
   normalizeVisitorVehicleType,
   normalizeDocumentNumber,
   getVisitorIntakeStatus,
+  shouldAttemptVisitorOutageNotice,
   shouldStartNewVisitorLog,
   shouldStartNewVisitorImageLog,
+  shouldReplyVisitorIntakeNow,
   buildVisitorIntakeReply,
   visitorIntakeImageUrl,
   getTargetIdFromSource,
+  getLineWebhookEventId,
+  isLineContentUnavailable,
+  isLineReplyFailure,
+  buildVisitorLineOutageNotice,
 };
