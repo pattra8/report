@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ใบเสร็จของฉัน · Pattra Villa 8</title>
+<link rel="stylesheet" href="/assets/resident-badge.css">
+<script src="/assets/resident-badge.js" defer></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:#f9f3e9; --bg-soft:#f3ecdd; --card:#ffffff; --border:#e6dcc7;
+    --border-soft:#efe8d6; --text:#2a2218; --text-body:#3a3024;
+    --text-soft:#6b5d4a; --text-muted:#8a7960; --accent:#c47a2c;
+    --accent-text:#9a5c1f; --accent-deep:#855015;
+    --ok:#3f6431; --ok-bg:#e8efd9; --warn:#855015; --warn-bg:#f7e6cd;
+    --err:#86341e; --err-bg:#f7dfd5; --neutral:#6b5d4a; --neutral-bg:#efe8d6;
+    --radius:16px; --shadow:0 1px 2px rgba(60,40,20,0.04), 0 8px 24px rgba(60,40,20,0.07);
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { margin:0; padding:0; }
+  body {
+    font-family:'IBM Plex Sans Thai', system-ui, sans-serif;
+    background:var(--bg); color:var(--text-body);
+    min-height:100dvh; padding:0 0 70px;
+  }
+  .mono { font-family:'IBM Plex Mono', monospace; }
+  .wrap { width:100%; max-width:620px; margin:0 auto; padding:0 14px; }
+
+  .site-header {
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    background:var(--bg); border-bottom:1px solid var(--border);
+    padding:14px 0; margin-bottom:16px;
+  }
+  .home-link { color:var(--accent-text); text-decoration:none; font-size:14px; font-weight:600; }
+  .resident-banner {
+    display:flex; align-items:center; gap:8px; background:transparent;
+    border:0; padding:0; margin:0; box-shadow:none; max-width:min(62vw,280px); cursor:pointer;
+  }
+  .resident-avatar {
+    width:28px; height:28px; border-radius:50%; flex:none;
+    display:flex; align-items:center; justify-content:center;
+    background:var(--bg-soft); color:var(--accent-text); font-family:'IBM Plex Mono', monospace;
+    font-weight:700; font-size:12px; border:1px solid var(--border);
+  }
+  .resident-meta { min-width:0; }
+  .resident-house { font-size:12px; font-weight:700; color:var(--text-soft); line-height:1.15; }
+  .resident-name {
+    font-size:11px; color:var(--text-muted); line-height:1.2; margin-top:1px;
+    word-break:break-word; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .profile-menu { position:relative; }
+  .profile-menu > summary { list-style:none; }
+  .profile-menu > summary::-webkit-details-marker { display:none; }
+  .profile-dropdown { position:absolute; z-index:120; top:calc(100% + 8px); right:0; width:220px; padding:7px; background:var(--card); border:1px solid var(--border); border-radius:14px; box-shadow:0 14px 34px rgba(49,38,29,.16); }
+  .profile-dropdown a,.profile-dropdown button { display:flex; width:100%; box-sizing:border-box; align-items:center; gap:9px; border:0; border-radius:9px; padding:10px 11px; background:transparent; color:var(--text); font:inherit; font-size:13px; text-align:left; text-decoration:none; cursor:pointer; }
+  .profile-dropdown a:hover,.profile-dropdown button:hover { background:var(--bg-soft); }
+  .profile-dropdown .profile-logout { color:#a33b32; border-top:1px solid var(--border); border-radius:0 0 9px 9px; margin-top:4px; }
+  @media (max-width:560px) {
+    .resident-banner { max-width:56vw; }
+    .resident-avatar { width:26px; height:26px; font-size:11px; }
+    .resident-house { font-size:11.5px; }
+    .resident-name { font-size:10.5px; }
+  }
+
+  h1 { font-size:20px; margin:0 0 4px; color:var(--text); }
+  .sub { font-size:13.5px; color:var(--text-soft); margin:0 0 18px; line-height:1.55; }
+
+  #loginOverlay {
+    position:fixed; inset:0; background:rgba(42,34,24,.45);
+    display:none; align-items:center; justify-content:center; padding:20px; z-index:50;
+  }
+  #loginOverlay.open { display:flex; }
+  .login-card {
+    background:var(--card); border-radius:var(--radius); box-shadow:var(--shadow);
+    width:100%; max-width:360px; padding:24px 22px;
+  }
+  .login-card h2 { font-size:17px; margin:0 0 4px; color:var(--text); }
+  .login-card p { font-size:13px; color:var(--text-soft); margin:0 0 18px; }
+  .house-row { display:flex; align-items:center; gap:6px; margin-bottom:12px; }
+  .house-prefix {
+    font-family:'IBM Plex Mono'; font-weight:600; color:var(--text-muted);
+    background:var(--bg-soft); border:1px solid var(--border); border-radius:10px;
+    padding:11px 10px; font-size:15px;
+  }
+  input[type=text], input[type=password] {
+    font-family:'IBM Plex Mono'; font-size:15px; font-weight:600;
+    border:1px solid var(--border); border-radius:10px; padding:11px 12px;
+    background:var(--bg-soft); color:var(--text); width:100%; outline:none;
+  }
+  input:focus { border-color:var(--accent); }
+  .pin-row { margin-bottom:16px; }
+  .btn-primary {
+    width:100%; background:var(--accent); color:#fff; border:none; border-radius:12px;
+    padding:12px; font-size:15px; font-weight:600; font-family:inherit; cursor:pointer;
+  }
+  .btn-primary:active { background:var(--accent-deep); }
+  .login-err { color:var(--err); font-size:12.5px; margin-top:10px; display:none; }
+  .login-err.show { display:block; }
+
+  /* Fee-type identity. Parking bills monthly and piles up; the common fee
+     arrives twice a year. Colour + emoji keep the two apart at a glance. */
+  .fee-parking { --fee:#2f6f9e; --fee-bg:#e6eff7; }
+  .fee-common  { --fee:#9a5c1f; --fee-bg:#f7e6cd; }
+
+  .rc-tabs {
+    display:flex; gap:4px; margin:0 0 16px; padding:4px;
+    background:var(--bg-soft); border:1px solid var(--border); border-radius:14px;
+  }
+  .rc-tab {
+    flex:1; display:flex; align-items:center; justify-content:center; gap:6px;
+    border:0; border-radius:11px; padding:9px 6px; background:transparent;
+    color:var(--text-soft); font:inherit; font-size:13px; font-weight:600;
+    cursor:pointer; white-space:nowrap;
+  }
+  .rc-tab .n {
+    font-family:'IBM Plex Mono', monospace; font-size:11px; font-weight:700;
+    border-radius:999px; padding:1px 6px; background:var(--border-soft); color:var(--text-muted);
+  }
+  .rc-tab[aria-selected="true"] {
+    background:var(--card); color:var(--fee, var(--accent-text));
+    box-shadow:0 1px 2px rgba(60,40,20,.07);
+  }
+  .rc-tab[aria-selected="true"] .n { background:var(--fee-bg, var(--bg-soft)); color:var(--fee, var(--accent-text)); }
+
+  .rc-chip {
+    display:inline-flex; align-items:center; gap:5px; border-radius:999px;
+    padding:3px 10px; font-size:12.5px; font-weight:700;
+    background:var(--fee-bg); color:var(--fee);
+  }
+
+  .rc-section {
+    display:flex; align-items:center; gap:7px; font-size:14px; font-weight:700;
+    color:var(--accent-deep); margin:22px 2px 11px;
+  }
+  .rc-section:first-child { margin-top:2px; }
+  .rc-section .count { font-weight:600; font-size:12.5px; color:var(--text-muted); }
+  .rc-section .sum { margin-left:auto; font-family:'IBM Plex Mono', monospace; font-weight:600; font-size:12.5px; color:var(--text-muted); }
+
+  .card {
+    background:var(--card); border:1px solid var(--border-soft); border-radius:var(--radius);
+    box-shadow:var(--shadow); overflow:hidden; margin-bottom:12px;
+  }
+  .card.fee-parking, .card.fee-common { border-left:4px solid var(--fee); }
+  .card.fee-parking .rc-amount, .card.fee-common .rc-amount { color:var(--fee); }
+  .card-body { padding:16px; }
+  .card-top { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+  .rc-eyebrow { font-size:11.5px; font-weight:700; color:var(--accent-text); }
+  .rc-fee { font-size:17.5px; font-weight:700; color:var(--text); margin-top:9px; line-height:1.35; }
+  .rc-period { font-size:13.5px; color:var(--text-soft); margin-top:4px; line-height:1.45; }
+  .rc-ref { color:var(--text-muted); }
+
+  .badge { display:inline-flex; align-items:center; gap:5px; border-radius:999px; padding:3px 10px; font-size:12px; font-weight:700; white-space:nowrap; flex:none; }
+  .badge .dot { width:6px; height:6px; border-radius:50%; }
+  .badge.complete { color:var(--ok); background:var(--ok-bg); }
+  .badge.complete .dot { background:var(--ok); }
+
+  .rc-amount-row { display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin-top:16px; padding-top:15px; border-top:1px solid var(--border-soft); }
+  .rc-amount-label { font-size:13px; color:var(--text-muted); }
+  .rc-amount { font-family:'IBM Plex Mono'; font-weight:700; font-size:25px; color:var(--accent-text); white-space:nowrap; }
+
+  .rc-meta { display:flex; flex-wrap:wrap; gap:7px 16px; margin-top:13px; font-size:13px; color:var(--text-soft); }
+  .rc-meta .em { display:inline-flex; align-items:center; gap:4px; color:var(--ok); }
+
+  .rc-actions { margin-top:14px; }
+  .btn-view {
+    width:100%; display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    background:var(--bg-soft); color:var(--accent-text); border:1px solid var(--border);
+    border-radius:12px; padding:11px 12px; font-size:14px; font-weight:600;
+    font-family:inherit; cursor:pointer;
+  }
+  .btn-view:active { background:var(--border-soft); }
+  .btn-view svg { flex:none; }
+  .btn-view[disabled] { opacity:.6; cursor:default; }
+
+  .rc-actions { display:flex; flex-direction:column; gap:8px; }
+  .btn-mail {
+    width:100%; display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    background:var(--card); color:var(--text-soft); border:1px solid var(--border);
+    border-radius:12px; padding:10px 12px; font-size:14px; font-weight:600;
+    font-family:inherit; cursor:pointer;
+  }
+  .btn-mail:active { background:var(--bg-soft); }
+  .btn-mail[disabled] { opacity:.6; cursor:default; }
+  .btn-mail svg { flex:none; }
+  .mail-box { border-top:1px solid var(--border-soft); margin-top:10px; padding-top:11px; }
+  .mail-to { font-size:12.5px; color:var(--text-soft); line-height:1.5; }
+  .mail-to b { color:var(--text); word-break:break-all; }
+  .mail-row { display:flex; gap:7px; margin-top:9px; }
+  .mail-row input { flex:1; font-family:inherit; font-size:13.5px; font-weight:500; }
+  .mail-send {
+    border:0; border-radius:10px; padding:10px 15px; font-size:13.5px; font-weight:600;
+    font-family:inherit; cursor:pointer; background:var(--accent); color:#fff; white-space:nowrap;
+  }
+  .mail-send[disabled] { opacity:.55; cursor:default; }
+  .mail-alt { margin-top:8px; background:none; border:0; padding:0; font:inherit; font-size:12.5px; color:var(--accent-text); cursor:pointer; }
+  .mail-alt:hover { text-decoration:underline; }
+  .mail-note { margin-top:8px; font-size:12.5px; }
+  .mail-note.ok { color:var(--ok); }
+  .mail-note.err { color:var(--err); }
+
+  .rc-name { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; margin-top:12px; font-size:13.5px; color:var(--text-soft); }
+  .rc-name b { color:var(--text); font-weight:600; }
+  .rc-name .edit {
+    display:inline-flex; align-items:center; gap:4px;
+    background:var(--bg-soft); border:1px solid var(--border); border-radius:999px;
+    padding:4px 10px 4px 8px; font:inherit; font-size:12px; font-weight:600;
+    color:var(--accent-text); cursor:pointer;
+  }
+  .rc-name .edit svg { flex:none; }
+  .rc-name .edit:hover, .rc-name .edit:active { background:var(--border-soft); }
+  .name-row { display:flex; gap:7px; margin-top:8px; }
+  .name-row input { flex:1; font-family:inherit; font-size:13.5px; font-weight:500; }
+
+  .empty-state, .loading-state {
+    text-align:center; padding:44px 20px; color:var(--text-muted); font-size:13.5px; line-height:1.6;
+  }
+  .empty-state .big { font-size:34px; display:block; margin-bottom:10px; }
+  .spinner {
+    display:inline-block; width:14px; height:14px; margin-right:6px;
+    border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%;
+    animation:spin .7s linear infinite; vertical-align:-2px;
+  }
+  @keyframes spin { to { transform:rotate(360deg); } }
+
+  /* Receipt viewer overlay */
+  #docOverlay {
+    position:fixed; inset:0; background:rgba(21,18,15,.78); display:none;
+    flex-direction:column; z-index:500;
+  }
+  #docOverlay.open { display:flex; }
+  .doc-head {
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:10px 14px; background:#231d17; color:#fff; flex:none;
+  }
+  .doc-title { font-size:13px; font-weight:600; color:#f5ead9; font-family:inherit; min-width:0; }
+  .doc-head-actions { display:flex; align-items:center; gap:8px; flex:none; }
+  .doc-btn {
+    border:0; border-radius:9px; padding:8px 13px; font-size:13px; font-weight:600;
+    font-family:inherit; cursor:pointer; background:var(--accent); color:#fff;
+    display:inline-flex; align-items:center; gap:6px;
+  }
+  .doc-btn:active { background:var(--accent-deep); }
+  .doc-close { background:transparent; color:#fff; font-size:22px; line-height:1; padding:2px 8px; }
+  .doc-head { padding-top:max(10px, env(safe-area-inset-top)); flex-wrap:wrap; }
+  .doc-close { min-width:44px; min-height:44px; }
+  .doc-btn-ghost { background:rgba(255,255,255,.12); color:#f5ead9; }
+  .doc-btn-ghost:active { background:rgba(255,255,255,.2); }
+  .doc-mailbar {
+    flex:none; display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px;
+    padding:11px 14px; background:#2d251d; color:#f0e5d4; font-size:13px;
+  }
+  .doc-mailbar[hidden] { display:none; }
+  .doc-mailbar b { color:#fff; word-break:break-all; }
+  .doc-mailbar input {
+    flex:1; min-width:180px; font-family:inherit; font-size:13.5px; font-weight:500;
+    background:#fff; border:1px solid #4a3f33; border-radius:9px; padding:8px 10px; color:var(--text);
+  }
+  .doc-mailbar .mail-send { padding:8px 14px; }
+  .doc-mailbar .mail-alt { margin:0; color:#e0b878; }
+  .doc-mailbar .ok { color:#a9c98d; }
+  .doc-mailbar .err { color:#f0a58e; }
+  #docFrame { flex:1; width:100%; border:0; background:#efe7d8; }
+
+  .footer-note {
+    text-align:center; font-size:11.5px; color:var(--text-muted); line-height:1.6; margin-top:24px;
+  }
+
+  #app { display:none; }
+</style>
+</head>
+<body>
+
+<div id="loginOverlay">
+  <div class="login-card">
+    <h2>เข้าสู่ระบบลูกบ้าน</h2>
+    <p>กรอกบ้านเลขที่และ PIN 6 หลัก เพื่อดูและดาวน์โหลดใบเสร็จของบ้านคุณ</p>
+    <div class="house-row">
+      <span class="house-prefix mono">38/</span>
+      <input type="text" id="houseSuffix" inputmode="numeric" placeholder="เลขที่บ้าน เช่น 12">
+    </div>
+    <div class="pin-row">
+      <input type="password" id="pin" inputmode="numeric" maxlength="6" placeholder="PIN 6 หลัก">
+    </div>
+    <button class="btn-primary" id="loginBtn">เข้าสู่ระบบ</button>
+    <div class="login-err" id="loginErr"></div>
+  </div>
+</div>
+
+<div id="app">
+  <div class="wrap">
+    <div class="site-header">
+      <a href="/" class="home-link">← หน้าแรก</a>
+      <div id="headerIdentity"><details class="profile-menu" id="profileMenu" style="display:none;">
+      <summary class="resident-banner" id="residentBanner" title="เปิดเมนูบัญชี" aria-label="เปิดเมนูบัญชี">
+        <div class="resident-avatar" id="residentAvatar">38</div>
+        <div class="resident-meta">
+          <div class="resident-house" id="residentHouse">บ้าน 38/—</div>
+          <div class="resident-name" id="residentName">—</div>
+        </div>
+      </summary>
+      <div class="profile-dropdown">
+        <a id="profileDataLink" href="/data/">👤 แก้ไขข้อมูลส่วนตัว</a>
+        <a id="profileVehicleLink" href="/vehicle/">🚗 ลงทะเบียนรถยนต์</a>
+        <button class="profile-logout" id="profileLogout" type="button">ออกจากระบบ</button>
+      </div>
+      </details></div>
+    </div>
+
+    <h1>🧾 ใบเสร็จของฉัน</h1>
+    <p class="sub">ใบเสร็จรับเงินค่าส่วนกลางและค่าจอดรถของบ้านคุณ กดดูหรือบันทึกเป็น PDF ได้ทุกใบ แม้ไม่ได้รับอีเมลหรือไม่มีอีเมล</p>
+
+    <div id="tabsRoot"></div>
+    <div id="listRoot"></div>
+    <div class="empty-state" id="emptyState" style="display:none;"></div>
+    <div class="loading-state" id="loadingState"><span class="spinner"></span>กำลังโหลด…</div>
+
+    <div class="footer-note">
+      แสดงเฉพาะใบเสร็จของ "บ้านคุณ" เท่านั้น<br>
+      ใบเสร็จจะปรากฏที่นี่หลังกรรมการตรวจสลิปและออกใบเสร็จเรียบร้อยแล้ว
+    </div>
+  </div>
+</div>
+
+<div id="docOverlay">
+  <div class="doc-head">
+    <span class="doc-title" id="docTitle">ใบเสร็จรับเงิน</span>
+    <div class="doc-head-actions">
+      <button class="doc-btn" id="docPrint">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+        บันทึก PDF / พิมพ์
+      </button>
+      <button class="doc-btn doc-btn-ghost" id="docMail">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 6l-10 7L2 6"/></svg>
+        ส่งเข้าอีเมล
+      </button>
+      <button class="doc-close" id="docClose" aria-label="ปิด">&times;</button>
+    </div>
+  </div>
+  <div class="doc-mailbar" id="docMailbar" hidden></div>
+  <iframe id="docFrame" title="ใบเสร็จรับเงิน"></iframe>
+</div>
+
+<script>
+  var SESSION_KEY = 'pattra_resident_session_v1';
+  var TTL_MS = 30 * 24 * 60 * 60 * 1000;
+  var PAY_API = 'https://asia-southeast1-pattra8-54c3f.cloudfunctions.net/pattraPay';
+  var AUTH_API = 'https://asia-southeast1-pattra8-54c3f.cloudfunctions.net/getResidentData';
+  var MONTHS_TH = ['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน',
+    'กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'];
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c];
+    });
+  }
+  function feeLabel(t) { return t === 'parking' ? 'ค่าจอดรถ' : 'ค่าส่วนกลาง'; }
+  function feeIcon(t) { return t === 'parking' ? '🅿️' : '🏠'; }
+  function monthLabel(period) {
+    var parts = String(period || '').split('-');
+    var m = parseInt(parts[1], 10);
+    return (MONTHS_TH[m - 1] || period) + ' ' + (parts[0] || '');
+  }
+  // One transfer can cover several parking months on a single receipt, so the
+  // label names the whole span rather than just the month it starts on.
+  function periodLabel(r) {
+    if (r.feeType === 'common') {
+      return r.period === 'H1' ? 'ครึ่งปีแรก (ม.ค.–มิ.ย.)' : 'ครึ่งปีหลัง (ก.ค.–ธ.ค.)';
+    }
+    if (r.periods && r.periods.length > 1) {
+      return monthLabel(r.periods[0]) + ' – ' + monthLabel(r.periods[r.periods.length - 1]) +
+        ' (' + r.periods.length + ' เดือน)';
+    }
+    return monthLabel(r.period);
+  }
+  function money(n) {
+    return Number(n || 0).toLocaleString('th-TH', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  }
+  function thaiDate(ms) {
+    if (!ms) return '';
+    try {
+      return new Date(ms).toLocaleDateString('th-TH-u-ca-gregory', {day:'numeric', month:'long', year:'numeric'});
+    } catch (e) { return ''; }
+  }
+
+  function getSession() {
+    try {
+      var s = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+      if (!s || Number(s.expiresAt) <= Date.now()) return null;
+      return s;
+    } catch (e) { return null; }
+  }
+  function storeSession(houseNo, pin, residentName) {
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      houseNo: houseNo, pin: pin, residentName: residentName || '',
+      expiresAt: Date.now() + TTL_MS
+    }));
+  }
+
+  var elLoginOverlay = document.getElementById('loginOverlay');
+  var elApp = document.getElementById('app');
+
+  function residentDisplayName(s) {
+    return String((s && s.residentName) || '').trim() || 'เจ้าของบ้าน';
+  }
+  var badgeMounted = false;
+  function renderResidentBanner() {
+    if (badgeMounted) { window.PattraBadge.refresh(); return; }
+    var s = getSession();
+    var banner = document.getElementById('residentBanner');
+    var menu = document.getElementById('profileMenu');
+    if (!s) { menu.style.display = 'none'; return; }
+    var houseNo = String(s.houseNo || '38/—');
+    var name = residentDisplayName(s);
+    var initial = (name.match(/[ก-๙A-Za-z0-9]/) || houseNo.match(/[0-9A-Za-z]/) || ['P'])[0];
+    document.getElementById('residentAvatar').textContent = String(initial).toUpperCase();
+    document.getElementById('residentHouse').textContent = 'บ้าน ' + houseNo;
+    document.getElementById('residentName').textContent = name;
+    var houseQuery = encodeURIComponent(houseNo);
+    document.getElementById('profileDataLink').href = '/data/?house=' + houseQuery;
+    document.getElementById('profileVehicleLink').href = '/vehicle/?house=' + houseQuery;
+    menu.style.display = 'block';
+  }
+
+  function mountResidentBadge() {
+    if (!window.PattraBadge) return false;
+    window.PattraBadge.mount('#headerIdentity', {
+      onLogin: showLogin,
+      onLogout: function() {
+        document.getElementById('listRoot').innerHTML = '';
+        showLogin();
+      }
+    });
+    badgeMounted = true;
+    return true;
+  }
+
+  function showLogin(msg) {
+    elApp.style.display = 'none';
+    elLoginOverlay.classList.add('open');
+    renderResidentBanner();
+    var err = document.getElementById('loginErr');
+    if (msg) { err.textContent = msg; err.classList.add('show'); }
+    else { err.classList.remove('show'); }
+    setTimeout(function(){ document.getElementById('houseSuffix').focus(); }, 80);
+  }
+  function showApp() {
+    elLoginOverlay.classList.remove('open');
+    elApp.style.display = 'block';
+    renderResidentBanner();
+  }
+
+  document.getElementById('profileLogout').addEventListener('click', function() {
+    if (!confirm('ออกจากระบบ?')) return;
+    localStorage.removeItem(SESSION_KEY);
+    document.getElementById('listRoot').innerHTML = '';
+    showLogin();
+  });
+
+  document.getElementById('loginBtn').addEventListener('click', doLogin);
+  document.getElementById('pin').addEventListener('keydown', function(e) { if (e.key === 'Enter') doLogin(); });
+  document.getElementById('houseSuffix').addEventListener('keydown', function(e) { if (e.key === 'Enter') document.getElementById('pin').focus(); });
+
+  function doLogin() {
+    var suffix = document.getElementById('houseSuffix').value.trim();
+    var pin = document.getElementById('pin').value.trim();
+    var err = document.getElementById('loginErr');
+    if (!suffix || pin.length < 4) {
+      err.textContent = 'กรอกบ้านเลขที่และ PIN ให้ครบ';
+      err.classList.add('show');
+      return;
+    }
+    var houseNo = '38/' + suffix;
+    var btn = document.getElementById('loginBtn');
+    btn.disabled = true; btn.textContent = 'กำลังตรวจสอบ…';
+    fetch(AUTH_API, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({houseNo: houseNo, pin: pin})
+    }).then(function(res) { return res.json().then(function(data) { return {ok: res.ok, data: data}; }); })
+      .then(function(r) {
+        if (!r.ok || !r.data.ok) {
+          err.textContent = 'บ้านเลขที่หรือ PIN ไม่ถูกต้อง';
+          err.classList.add('show');
+          return;
+        }
+        var residentName = r.data.resident ? r.data.resident.name : '';
+        storeSession(houseNo, pin, residentName);
+        showApp();
+        loadReceipts();
+      })
+      .catch(function() {
+        err.textContent = 'เชื่อมต่อไม่สำเร็จ กรุณาลองใหม่';
+        err.classList.add('show');
+      })
+      .finally(function() {
+        btn.disabled = false; btn.textContent = 'เข้าสู่ระบบ';
+      });
+  }
+
+  function feeClass(t) { return t === 'parking' ? 'fee-parking' : 'fee-common'; }
+
+  // Restyle saved receipts for display without changing their stored financial data.
+  function presentReceipt(html, record) {
+    var doc = new DOMParser().parseFromString(html, 'text/html');
+    var sheet = doc.querySelector('.doc');
+    var title = doc.querySelector('.doctitle .ttl');
+    if (!sheet || !title || !record) return html;
+    sheet.classList.add(record.feeType === 'parking' ? 'receipt-parking' : 'receipt-common');
+    title.textContent = 'ใบเสร็จรับเงิน';
+    var fee = doc.createElement('span');
+    fee.className = 'ttlfee';
+    fee.textContent = feeLabel(record.feeType);
+    title.appendChild(fee);
+    var houseLabel = doc.querySelector('.hero .l');
+    if (houseLabel) houseLabel.textContent = 'บ้านเลขที่';
+    var oldRef = doc.querySelector('.rno2');
+    if (oldRef) {
+      var reference = doc.createElement('div');
+      reference.className = 'receipt-reference num';
+      reference.textContent = 'เลขที่ใบเสร็จ ' + oldRef.textContent.trim();
+      oldRef.remove();
+      sheet.appendChild(reference);
+    }
+    var brand = doc.querySelector('.brand');
+    if (brand) brand.innerHTML = "<div class=\"receipt-logo\"><img src=\"https://pattra8.com/myreceipt/assets/pattra-villa-logo.jpg\" alt=\"Pattra Villa\" width=\"480\" height=\"480\"></div>";
+    var period = doc.querySelector('.hero .per');
+    if (period) {
+      var label = period.previousElementSibling;
+      if (label && label.textContent.trim() === 'สำหรับงวด') label.remove();
+      period.className = 'period-inline';
+      period.insertBefore(doc.createTextNode('งวด '), period.firstChild);
+    }
+    // Preserve the date printed on issued receipts; convert only its calendar year.
+    doc.querySelectorAll('.krow').forEach(function(row) {
+      var key = row.querySelector('.k');
+      var value = row.querySelector('.v');
+      if (key && value && key.textContent.trim() === 'วันที่') {
+        value.textContent = value.textContent.replace(/\b(25\d{2})\b/g, function(year) {
+          return String(Number(year) - 543);
+        });
+      }
+    });
+    var style = doc.createElement('style');
+    style.textContent = "\n  /* Receipt hierarchy: plain Thai heading, distinct fee type, quiet reference. */\n  .doctitle .ttl{font-family:\"IBM Plex Sans Thai\",Tahoma,sans-serif;font-size:18px;font-weight:500;letter-spacing:normal;line-height:1.65;white-space:normal;padding:0 10px;color:#6b5d4a}\n  .doctitle .ttlfee{font-family:\"IBM Plex Sans Thai\",Tahoma,sans-serif;font-size:32px;font-weight:700;letter-spacing:normal;line-height:1.5;color:#a45f1c;margin-top:2px;white-space:nowrap}\n  .hero .h{font-size:36px;line-height:1.3}\n  .paid{margin-right:0}\n  .receipt-reference{padding:0 24px 18px;text-align:right;font-size:10px;line-height:1.6;color:#786e61;overflow-wrap:anywhere}\n  .receipt-parking .bar{background:#397568}\n  .receipt-parking .ttlfee,.receipt-parking .amtline .v{color:#2f6b5d}\n  .receipt-parking .amtline{background:#f0f7f4;border-color:#d4e5dd}\n  @media(max-width:420px){.brand{padding:22px 16px 0}.wm{font-size:32px}.wmsub{font-size:13px}.doctitle .ttlfee{font-size:28px}.hero{padding:16px}.amtline{margin:0 16px;padding:14px 12px}.amtline .k{font-size:12px}.amtline .v{font-size:24px}.klist{margin:16px 16px 0}.krow td{font-size:13px}.foot{margin:14px 16px 20px}.foot .note{font-size:10px}.sign .sig{font-size:15px}}\n\n  /* Compact receipt spacing, retaining readable Thai text. */\n  .brand{padding:18px 24px 0}\n  .wm{font-size:32px}\n  .wmsub{font-size:13px;margin-top:4px}\n  .brand + div{padding-top:10px!important}\n  .doctitle .ttl{font-size:16px;line-height:1.5}\n  .doctitle .ttlfee{font-size:28px;line-height:1.4;margin-top:0}\n  .docmeta{margin-top:7px}\n  .paid{padding:3px 11px;font-size:11.5px}\n  .hero{padding:10px 24px 12px}\n  .hero .l,.hero .h{display:inline-block;vertical-align:baseline}\n  .hero .l{font-size:13px;margin-right:8px}\n  .hero .h{font-size:28px;line-height:1.3;margin:0 0 4px}\n  .hero .p{font-size:13px;line-height:1.5}\n  .hero .per{font-size:17px;line-height:1.5;margin:0}\n  .amtline{padding:11px 16px}\n  .amtline .v{font-size:26px}\n  .words{margin-top:6px;font-size:12.5px}\n  .klist{margin-top:10px}\n  .krow td{padding:7px 0;font-size:13px}\n  .foot{margin-top:10px;margin-bottom:12px;padding-top:10px}\n  .sign .sig{font-size:17px}\n  .receipt-reference{padding-bottom:12px}\n  @media(max-width:420px){.brand{padding:16px 16px 0}.wm{font-size:29px}.hero{padding:9px 16px 10px}.amtline{padding:10px 12px}.amtline .v{font-size:24px}.klist{margin-top:8px}.foot{margin-top:8px;margin-bottom:10px}.sign .sig{font-size:15px}}\n\n  .receipt-logo{position:relative;width:290px;max-width:100%;height:44px;overflow:hidden;margin:0 auto}\n  .receipt-logo img{position:absolute;width:480px;max-width:none;height:480px;left:50%;top:-184px;transform:translateX(-50%)}\n  .hero .period-inline{font-size:14px;line-height:1.6;color:#6b5d4a}\n  .hero .period-inline b{font-size:16px;color:#2a2218;font-weight:600}\n";
+    doc.head.appendChild(style);
+    return '<!doctype html>' + doc.documentElement.outerHTML;
+  }
+
+  function receiptCard(r) {
+    var emailed = r.emailed
+      ? '<span class="em"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z" style="display:none"/><path d="M22 6l-10 7L2 6"/><rect x="2" y="4" width="20" height="16" rx="2"/></svg>ส่งอีเมลแล้ว</span>'
+      : '';
+    var dateStr = thaiDate(r.verifiedAt);
+    var showYear = r.year && String(periodLabel(r)).indexOf(String(r.year)) === -1;
+    // The chip carries the fee type, so the title is free to be the thing a
+    // resident actually looks for: which period this receipt covers.
+    return '<div class="card ' + feeClass(r.feeType) + '">' +
+      '<div class="card-body">' +
+        '<div class="card-top">' +
+          '<span class="rc-chip">' + feeIcon(r.feeType) + ' ' + esc(feeLabel(r.feeType)) + '</span>' +
+          '<span class="badge complete"><span class="dot"></span>ชำระแล้ว</span>' +
+        '</div>' +
+        '<div class="rc-fee">' + esc(periodLabel(r)) + '</div>' +
+        // The year only earns a line when the period label lacks it: parking
+        // reads "สิงหาคม 2026" already, the common fee reads "ครึ่งปีหลัง".
+        (showYear ? '<div class="rc-period">ปี ' + esc(r.year) + '</div>' : '') +
+        '<div class="rc-amount-row">' +
+          '<span class="rc-amount-label">จำนวนเงิน</span>' +
+          '<span class="rc-amount mono">฿' + money(r.amount) + '</span>' +
+        '</div>' +
+        '<div class="rc-name" id="name-' + esc(r.id) + '">' + nameLine(r) + '</div>' +
+        '<div class="rc-meta">' +
+          (dateStr ? '<span>ออกใบเสร็จ ' + esc(dateStr) + '</span>' : '') +
+          (r.receiptNo ? '<span class="rc-ref mono">เลขที่ ' + esc(r.receiptNo) + '</span>' : '') +
+          emailed +
+        '</div>' +
+        '<div class="rc-actions">' +
+          '<button class="btn-view" data-view="' + esc(r.id) + '">' +
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>' +
+            'ดูใบเสร็จ / บันทึก PDF' +
+          '</button>' +
+          '<button class="btn-mail" data-mail="' + esc(r.id) + '">' +
+            '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 6l-10 7L2 6"/></svg>' +
+            'ส่งเข้าอีเมล' +
+          '</button>' +
+          '<div class="mail-box" id="mailbox-' + esc(r.id) + '" hidden></div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  // ---- Tabs ----
+  // A renting house collects a parking receipt every month but only two
+  // common-fee receipts a year, so one long mixed list buries the rarer one.
+  var ALL_RECEIPTS = [];
+  var ACTIVE_TAB = 'all';
+  var TAB_META = {
+    all:     {label:'ทั้งหมด', icon:'',    cls:''},
+    parking: {label:'ค่าจอดรถ', icon:'🅿️', cls:'fee-parking'},
+    common:  {label:'ค่าส่วนกลาง', icon:'🏠', cls:'fee-common'}
+  };
+
+  function tabCount(type) {
+    if (type === 'all') return ALL_RECEIPTS.length;
+    return ALL_RECEIPTS.filter(function(r) {
+      return (r.feeType === 'parking' ? 'parking' : 'common') === type;
+    }).length;
+  }
+
+  function renderTabs() {
+    var root = document.getElementById('tabsRoot');
+    // Only one kind of receipt? Then there is nothing to switch between.
+    if (!tabCount('parking') || !tabCount('common')) { root.innerHTML = ''; return; }
+    root.innerHTML = '<div class="rc-tabs" role="tablist">' +
+      ['all', 'parking', 'common'].map(function(t) {
+        var m = TAB_META[t];
+        return '<button class="rc-tab ' + m.cls + '" role="tab" data-tab="' + t + '"' +
+          ' aria-selected="' + (ACTIVE_TAB === t ? 'true' : 'false') + '">' +
+          (m.icon ? m.icon + ' ' : '') + esc(m.label) +
+          '<span class="n">' + tabCount(t) + '</span></button>';
+      }).join('') +
+    '</div>';
+  }
+
+  function renderList() {
+    var root = document.getElementById('listRoot');
+    var rows = ALL_RECEIPTS.filter(function(r) {
+      if (ACTIVE_TAB === 'all') return true;
+      return (r.feeType === 'parking' ? 'parking' : 'common') === ACTIVE_TAB;
+    }).sort(function(a, b) { return (b.verifiedAt || 0) - (a.verifiedAt || 0); });
+
+    if (!rows.length) { root.innerHTML = '<div class="empty-state">ยังไม่มีใบเสร็จในหมวดนี้</div>'; return; }
+
+    // Parking runs monthly, so a year heading with its total keeps a long
+    // list readable. The other tabs are short enough to list flat.
+    if (ACTIVE_TAB === 'parking') {
+      var years = [];
+      var byYear = {};
+      rows.forEach(function(r) {
+        var y = String(r.year || (r.period || '').slice(0, 4) || '');
+        if (!byYear[y]) { byYear[y] = []; years.push(y); }
+        byYear[y].push(r);
+      });
+      root.innerHTML = years.map(function(y) {
+        var list = byYear[y];
+        var sum = list.reduce(function(t, r) { return t + (Number(r.amount) || 0); }, 0);
+        return '<div class="rc-section fee-parking">ปี ' + esc(y) +
+            ' <span class="count">' + list.length + ' ใบ</span>' +
+            '<span class="sum">฿' + money(sum) + '</span>' +
+          '</div>' + list.map(receiptCard).join('');
+      }).join('');
+      return;
+    }
+    root.innerHTML = rows.map(receiptCard).join('');
+  }
+
+  function renderReceipts(receipts) {
+    var empty = document.getElementById('emptyState');
+    ALL_RECEIPTS = receipts || [];
+    if (!ALL_RECEIPTS.length) {
+      document.getElementById('tabsRoot').innerHTML = '';
+      document.getElementById('listRoot').innerHTML = '';
+      empty.style.display = 'block';
+      empty.innerHTML = '<span class="big">🧾</span>ยังไม่มีใบเสร็จของบ้านคุณ<br>' +
+        '<small>เมื่อกรรมการตรวจสลิปและออกใบเสร็จแล้ว ใบเสร็จจะมาปรากฏที่นี่</small>';
+      return;
+    }
+    empty.style.display = 'none';
+    renderTabs();
+    renderList();
+  }
+
+  document.getElementById('tabsRoot').addEventListener('click', function(ev) {
+    var btn = ev.target.closest ? ev.target.closest('[data-tab]') : null;
+    if (!btn) return;
+    ACTIVE_TAB = btn.getAttribute('data-tab');
+    renderTabs();
+    renderList();
+  });
+
+  function loadReceipts() {
+    var s = getSession();
+    if (!s) { showLogin(); return; }
+    document.getElementById('loadingState').style.display = 'block';
+    document.getElementById('listRoot').innerHTML = '';
+    document.getElementById('emptyState').style.display = 'none';
+    fetch(PAY_API, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      cache: 'no-store',
+      body: JSON.stringify({action: 'myReceipts', houseNo: s.houseNo, pin: s.pin})
+    }).then(function(res) {
+      if (res.status === 401) {
+        localStorage.removeItem(SESSION_KEY);
+        showLogin('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+        return null;
+      }
+      if (res.status === 403) {
+        document.getElementById('loadingState').style.display = 'none';
+        document.getElementById('listRoot').innerHTML = '<div class="empty-state">บัญชีนี้ไม่มีสิทธิ์ดูข้อมูลส่วนนี้</div>';
+        return null;
+      }
+      return res.json().then(function(data) { return {ok: res.ok, data: data}; });
+    }).then(function(r) {
+      document.getElementById('loadingState').style.display = 'none';
+      if (!r) return;
+      if (!r.ok || !r.data.ok) {
+        document.getElementById('listRoot').innerHTML =
+          '<div class="empty-state">โหลดข้อมูลไม่สำเร็จ<br><small>' + esc(r.data.error || '') + '</small></div>';
+        return;
+      }
+      showApp();
+      DEFAULT_EMAIL = r.data.defaultEmail || '';
+      MY_HOUSE = r.data.houseNo || '';
+      renderReceipts(r.data.receipts || []);
+    }).catch(function() {
+      document.getElementById('loadingState').style.display = 'none';
+      document.getElementById('listRoot').innerHTML = '<div class="empty-state">เชื่อมต่อไม่สำเร็จ กรุณาลองใหม่</div>';
+    });
+  }
+
+  // ---- The name the receipt is issued in ----
+  // Residents file these for expense claims, so they can correct the name
+  // themselves. Every change is logged for the committee.
+  function nameLine(r) {
+    return 'ใบเสร็จในนาม <b>' + esc(r.payerName || (MY_HOUSE ? 'บ้าน 38/' + MY_HOUSE : 'ยังไม่ได้ระบุ')) + '</b>' +
+      '<button class="edit" data-rename="' + esc(r.id) + '">' +
+        '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>' +
+        'แก้ไข' +
+      '</button>';
+  }
+
+  function nameEditor(id, opts) {
+    var box = document.getElementById('name-' + id);
+    var rec = ALL_RECEIPTS.find(function(item) { return item.id === id; });
+    if (!box || !rec) return;
+    opts = opts || {};
+    if (opts.view) { box.innerHTML = nameLine(rec); return; }
+    box.innerHTML = '<span>ใบเสร็จออกในนาม</span>' +
+      '<div class="name-row" style="width:100%">' +
+        '<input type="text" id="nameinput-' + id + '" maxlength="120" value="' + esc(opts.value != null ? opts.value : (rec.payerName || '')) + '" placeholder="ชื่อ-นามสกุล หรือชื่อบริษัท">' +
+        '<button class="mail-send" data-rename-save="' + id + '">บันทึก</button>' +
+      '</div>' +
+      '<button class="edit" data-rename-cancel="' + id + '">ยกเลิก</button>' +
+      (opts.note ? '<div class="mail-note ' + opts.note.kind + '" style="width:100%">' + esc(opts.note.text) + '</div>' : '');
+  }
+
+  function saveReceiptName(id, btn) {
+    var s = getSession();
+    if (!s) { showLogin(); return; }
+    var input = document.getElementById('nameinput-' + id);
+    var name = input ? input.value.trim() : '';
+    if (!name) { nameEditor(id, {note: {kind: 'err', text: 'กรุณากรอกชื่อ'}}); return; }
+    btn.disabled = true;
+    btn.textContent = 'กำลังบันทึก…';
+    fetch(PAY_API, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      cache: 'no-store',
+      body: JSON.stringify({action: 'myReceiptRename', houseNo: s.houseNo, pin: s.pin, id: id, name: name})
+    }).then(function(res) {
+      if (res.status === 401) {
+        localStorage.removeItem(SESSION_KEY);
+        showLogin('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+        return null;
+      }
+      return res.json().catch(function() { return {}; });
+    }).then(function(data) {
+      if (!data) return;
+      if (!data.ok) { nameEditor(id, {value: name, note: {kind: 'err', text: data.error || 'บันทึกไม่สำเร็จ'}}); return; }
+      var rec = ALL_RECEIPTS.find(function(item) { return item.id === id; });
+      if (rec) rec.payerName = data.payerName || name;
+      nameEditor(id, {view: true});
+    }).catch(function() {
+      nameEditor(id, {value: name, note: {kind: 'err', text: 'เชื่อมต่อไม่สำเร็จ'}});
+    });
+  }
+
+  // ---- Email one receipt ----
+  // The address on file is the default; typing another one is the exception,
+  // so the panel opens with the known address and one confirm button.
+  var DEFAULT_EMAIL = '';
+  var MY_HOUSE = '';
+
+  function mailPanel(id, opts) {
+    var box = document.getElementById('mailbox-' + id);
+    if (!box) return;
+    opts = opts || {};
+    var custom = opts.custom || !DEFAULT_EMAIL;
+    var note = opts.note ? '<div class="mail-note ' + opts.note.kind + '">' + esc(opts.note.text) + '</div>' : '';
+    if (opts.done) {
+      box.innerHTML = '<div class="mail-note ok">ส่งใบเสร็จไปที่ ' + esc(opts.done) + ' แล้ว ✓</div>';
+      box.hidden = false;
+      return;
+    }
+    box.innerHTML = custom
+      ? '<div class="mail-to">ส่งใบเสร็จไปที่อีเมล</div>' +
+        '<div class="mail-row">' +
+          '<input type="email" id="mailinput-' + id + '" inputmode="email" placeholder="you@email.com" value="' + esc(opts.value || '') + '">' +
+          '<button class="mail-send" data-send="' + id + '">ส่ง</button>' +
+        '</div>' +
+        (DEFAULT_EMAIL ? '<button class="mail-alt" data-default="' + id + '">↩ ใช้อีเมลในระบบ (' + esc(DEFAULT_EMAIL) + ')</button>' : '') +
+        note
+      : '<div class="mail-to">ส่งไปที่ <b>' + esc(DEFAULT_EMAIL) + '</b></div>' +
+        '<div class="mail-row">' +
+          '<button class="mail-send" data-send="' + id + '">ส่งใบเสร็จ</button>' +
+        '</div>' +
+        '<button class="mail-alt" data-custom="' + id + '">ส่งไปอีเมลอื่น</button>' +
+        note;
+    box.hidden = false;
+  }
+
+  function toggleMailPanel(id) {
+    var box = document.getElementById('mailbox-' + id);
+    if (!box) return;
+    if (!box.hidden) { box.hidden = true; box.innerHTML = ''; return; }
+    mailPanel(id);
+  }
+
+  function sendReceiptEmail(id, btn) {
+    var s = getSession();
+    if (!s) { showLogin(); return; }
+    var input = document.getElementById('mailinput-' + id);
+    var email = input ? input.value.trim() : '';
+    if (input && !email) { mailPanel(id, {custom: true, note: {kind: 'err', text: 'กรุณากรอกอีเมล'}}); return; }
+    btn.disabled = true;
+    btn.textContent = 'กำลังส่ง…';
+    fetch(PAY_API, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      cache: 'no-store',
+      body: JSON.stringify({action: 'myReceiptEmail', houseNo: s.houseNo, pin: s.pin, id: id, email: email})
+    }).then(function(res) {
+      if (res.status === 401) {
+        localStorage.removeItem(SESSION_KEY);
+        showLogin('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+        return null;
+      }
+      return res.json().catch(function() { return {}; });
+    }).then(function(data) {
+      if (!data) return;
+      if (!data.ok) {
+        mailPanel(id, {custom: !!email, value: email, note: {kind: 'err', text: data.error || 'ส่งไม่สำเร็จ'}});
+        return;
+      }
+      mailPanel(id, {done: data.to || email || DEFAULT_EMAIL});
+    }).catch(function() {
+      mailPanel(id, {custom: !!email, value: email, note: {kind: 'err', text: 'เชื่อมต่อไม่สำเร็จ'}});
+    });
+  }
+
+  // ---- Email from inside the open receipt ----
+  // Same rule as the card: the address on file is the default, another one
+  // is the exception.
+  var CURRENT_DOC_ID = '';
+
+  function docMailPanel(opts) {
+    var bar = document.getElementById('docMailbar');
+    if (!bar) return;
+    opts = opts || {};
+    if (opts.done) {
+      bar.innerHTML = '<span class="ok">ส่งใบเสร็จไปที่ ' + esc(opts.done) + ' แล้ว ✓</span>';
+      bar.hidden = false;
+      return;
+    }
+    var custom = opts.custom || !DEFAULT_EMAIL;
+    var note = opts.note ? '<span class="' + opts.note.kind + '">' + esc(opts.note.text) + '</span>' : '';
+    bar.innerHTML = custom
+      ? '<span>ส่งใบเสร็จไปที่</span>' +
+        '<input type="email" id="mailinput-doc" inputmode="email" placeholder="you@email.com" value="' + esc(opts.value || '') + '">' +
+        '<button class="mail-send" id="docMailSend">ส่ง</button>' +
+        (DEFAULT_EMAIL ? '<button class="mail-alt" id="docMailDefault">↩ ใช้อีเมลในระบบ</button>' : '') + note
+      : '<span>ส่งไปที่ <b>' + esc(DEFAULT_EMAIL) + '</b></span>' +
+        '<button class="mail-send" id="docMailSend">ส่งใบเสร็จ</button>' +
+        '<button class="mail-alt" id="docMailCustom">ส่งไปอีเมลอื่น</button>' + note;
+    bar.hidden = false;
+  }
+
+  function sendDocEmail(btn) {
+    var s = getSession();
+    if (!s || !CURRENT_DOC_ID) { return; }
+    var input = document.getElementById('mailinput-doc');
+    var email = input ? input.value.trim() : '';
+    if (input && !email) { docMailPanel({custom: true, note: {kind: 'err', text: 'กรุณากรอกอีเมล'}}); return; }
+    btn.disabled = true;
+    btn.textContent = 'กำลังส่ง…';
+    fetch(PAY_API, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      cache: 'no-store',
+      body: JSON.stringify({action: 'myReceiptEmail', houseNo: s.houseNo, pin: s.pin, id: CURRENT_DOC_ID, email: email})
+    }).then(function(res) {
+      if (res.status === 401) {
+        localStorage.removeItem(SESSION_KEY);
+        showLogin('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+        return null;
+      }
+      return res.json().catch(function() { return {}; });
+    }).then(function(data) {
+      if (!data) return;
+      if (!data.ok) {
+        docMailPanel({custom: !!email, value: email, note: {kind: 'err', text: data.error || 'ส่งไม่สำเร็จ'}});
+        return;
+      }
+      docMailPanel({done: data.to || email || DEFAULT_EMAIL});
+    }).catch(function() {
+      docMailPanel({custom: !!email, value: email, note: {kind: 'err', text: 'เชื่อมต่อไม่สำเร็จ'}});
+    });
+  }
+
+  document.getElementById('docMail').addEventListener('click', function() {
+    var bar = document.getElementById('docMailbar');
+    if (!bar.hidden) { bar.hidden = true; bar.innerHTML = ''; return; }
+    docMailPanel();
+  });
+  document.getElementById('docMailbar').addEventListener('click', function(e) {
+    if (e.target.closest('#docMailSend')) sendDocEmail(e.target.closest('#docMailSend'));
+    else if (e.target.closest('#docMailCustom')) docMailPanel({custom: true});
+    else if (e.target.closest('#docMailDefault')) docMailPanel({custom: false});
+  });
+
+  // ---- Receipt viewer ----
+  var elDocOverlay = document.getElementById('docOverlay');
+  var elDocFrame = document.getElementById('docFrame');
+
+  function openReceipt(id, cardBtn) {
+    var s = getSession();
+    if (!s) { showLogin(); return; }
+    var label = cardBtn ? cardBtn.innerHTML : '';
+    cardBtn.disabled = true;
+    cardBtn.innerHTML = '<span class="spinner"></span>กำลังเปิด…';
+    fetch(PAY_API, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      cache: 'no-store',
+      body: JSON.stringify({action: 'myReceiptDoc', houseNo: s.houseNo, pin: s.pin, id: id})
+    }).then(function(res) {
+      if (res.status === 401) {
+        localStorage.removeItem(SESSION_KEY);
+        showLogin('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+        return null;
+      }
+      if (res.status === 403) {
+        cardBtn.disabled = false;
+        cardBtn.innerHTML = label;
+        alert('บัญชีนี้ไม่มีสิทธิ์ดูข้อมูลส่วนนี้');
+        return null;
+      }
+      return res.json().then(function(data) { return {ok: res.ok, data: data}; });
+    }).then(function(r) {
+      cardBtn.disabled = false;
+      cardBtn.innerHTML = label;
+      if (!r) return;
+      if (!r.ok || !r.data.ok || !r.data.receiptHtml) {
+        alert('เปิดใบเสร็จไม่สำเร็จ' + (r.data && r.data.error ? '\n' + r.data.error : ''));
+        return;
+      }
+      document.getElementById('docTitle').textContent = 'ใบเสร็จรับเงิน';
+      var record = ALL_RECEIPTS.find(function(item) { return item.id === id; });
+      CURRENT_DOC_ID = id;
+      var bar = document.getElementById('docMailbar');
+      bar.hidden = true; bar.innerHTML = '';
+      elDocFrame.setAttribute('srcdoc', presentReceipt(r.data.receiptHtml, record));
+      elDocOverlay.classList.add('open');
+      // fix2: the viewer is a step in history, so the browser's Back button
+      // returns to the receipt list instead of leaving the page.
+      if (!overlayPushed) {
+        history.pushState({docOverlay: true}, '');
+        overlayPushed = true;
+      }
+    }).catch(function() {
+      cardBtn.disabled = false;
+      cardBtn.innerHTML = label;
+      alert('เชื่อมต่อไม่สำเร็จ กรุณาลองใหม่');
+    });
+  }
+
+  var overlayPushed = false;
+
+  function closeReceipt(fromPopState) {
+    elDocOverlay.classList.remove('open');
+    elDocFrame.removeAttribute('srcdoc');
+    CURRENT_DOC_ID = '';
+    var bar = document.getElementById('docMailbar');
+    if (bar) { bar.hidden = true; bar.innerHTML = ''; }
+    if (overlayPushed) {
+      overlayPushed = false;
+      // Closing with the × should also unwind the history step, so Back does
+      // not have to be pressed twice to leave the page.
+      if (!fromPopState) history.back();
+    }
+  }
+
+  window.addEventListener('popstate', function() {
+    if (elDocOverlay.classList.contains('open')) closeReceipt(true);
+  });
+
+  document.getElementById('docClose').addEventListener('click', function() { closeReceipt(); });
+  document.getElementById('docPrint').addEventListener('click', function() {
+    try {
+      elDocFrame.contentWindow.focus();
+      elDocFrame.contentWindow.print();
+    } catch (e) {
+      window.print();
+    }
+  });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+      closeReceipt();
+      document.querySelectorAll('.profile-menu[open]').forEach(function(menu) { menu.open = false; });
+    }
+  });
+
+  document.addEventListener('click', function(e) {
+    var btn = e.target.closest('[data-view]');
+    if (btn) openReceipt(btn.getAttribute('data-view'), btn);
+    var mail = e.target.closest('[data-mail]');
+    if (mail) toggleMailPanel(mail.getAttribute('data-mail'));
+    var send = e.target.closest('[data-send]');
+    if (send) sendReceiptEmail(send.getAttribute('data-send'), send);
+    var custom = e.target.closest('[data-custom]');
+    if (custom) mailPanel(custom.getAttribute('data-custom'), {custom: true});
+    var useDefault = e.target.closest('[data-default]');
+    if (useDefault) mailPanel(useDefault.getAttribute('data-default'), {custom: false});
+    var rename = e.target.closest('[data-rename]');
+    if (rename) nameEditor(rename.getAttribute('data-rename'));
+    var renameSave = e.target.closest('[data-rename-save]');
+    if (renameSave) saveReceiptName(renameSave.getAttribute('data-rename-save'), renameSave);
+    var renameCancel = e.target.closest('[data-rename-cancel]');
+    if (renameCancel) nameEditor(renameCancel.getAttribute('data-rename-cancel'), {view: true});
+    document.querySelectorAll('.profile-menu[open]').forEach(function(menu) {
+      if (!menu.contains(e.target)) menu.open = false;
+    });
+  });
+
+  document.addEventListener('DOMContentLoaded', mountResidentBadge);
+
+  // Boot: reuse pattra8.com session if present, else prompt login.
+  (function boot() {
+    if (getSession()) { showApp(); loadReceipts(); }
+    else { showLogin(); }
+  })();
+</script>
+
+</body>
+</html>
