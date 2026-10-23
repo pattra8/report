@@ -1,0 +1,21 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "visitor_intake_logs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "houseNo", "order": "ASCENDING"},
+        {"fieldPath": "createdAt", "order": "DESCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "lpr_traffic_events",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "imageStored", "order": "ASCENDING"},
+        {"fieldPath": "capturedAtEpoch", "order": "ASCENDING"}
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

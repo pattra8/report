@@ -2,15 +2,28 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    // The estate issue board used to be world readable and world writable,
+    // which meant anyone could read a neighbour's private complaint or delete
+    // the whole board. Reporting now runs through the `estateIssues` Cloud
+    // Function, which authenticates the resident and enforces the anonymity
+    // rules, so no browser needs direct access any more. The Admin SDK used by
+    // Cloud Functions bypasses these rules.
+    //
+    // `estate_issues`, `estate_issue_counters` and `issues_archive` are
+    // deliberately absent: unlisted collections are denied by default.
     match /issues/{issueId} {
-      allow read, create, update, delete: if true;
+      allow read, write: if false;
     }
 
     match /private_issues/{issueId} {
-      allow read, create, update, delete: if true;
+      allow read, write: if false;
     }
 
     match /announcements/{announcementId} {
+      allow read, create, update, delete: if true;
+    }
+
+    match /parking/{documentId} {
       allow read, create, update, delete: if true;
     }
   }
