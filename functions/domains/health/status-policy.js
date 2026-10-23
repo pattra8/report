@@ -31,8 +31,8 @@ function anprEventStatus({
   lastEventEpoch = 0,
   peerLastEventEpoch = 0,
   peerEventsSince = 0,
-  warningAfterMs = 2 * 60 * 60 * 1000,
-  offlineAfterMs = 4 * 60 * 60 * 1000,
+  warningAfterMs = 1 * 60 * 60 * 1000,
+  offlineAfterMs = 2 * 60 * 60 * 1000,
   peerActiveWithinMs = 30 * 60 * 1000,
   minimumPeerEvents = 5,
 } = {}) {

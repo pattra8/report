@@ -145,6 +145,187 @@ function nextParkingStart(takenPeriods, currentPeriod) {
   return `${year}-${String(month).padStart(2, "0")}`;
 }
 
+/**
+ * Turn a period key into a comparable month index, or -1.
+ * @param {string} period period key
+ * @return {number} months since year 0, or -1 when unusable
+ */
+function periodIndex(period) {
+  const parsed = parseParkingPeriod(period);
+  return parsed ? parsed.year * 12 + (parsed.month - 1) : -1;
+}
+
+/**
+ * Turn a month index back into a period key.
+ * @param {number} index months since year 0
+ * @return {string} period key
+ */
+function periodFromIndex(index) {
+  const year = Math.floor(index / 12);
+  const month = (index % 12) + 1;
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+/**
+ * Choose which months a payment settles: unpaid ones first, oldest first.
+ *
+ * A resident who has fallen behind and then transfers is paying off the
+ * arrears, not buying a month in the future — so the months already skipped
+ * get filled before the run carries on past today. Only gaps AFTER the house's
+ * first record count: the committee is still entering historical slips, and a
+ * month with no record from before the house appears in the system is missing
+ * data rather than a debt (the same rule /myparking shows residents).
+ *
+ * Returned months are not necessarily consecutive.
+ *
+ * @param {string[]} takenPeriods periods already pending or verified
+ * @param {string} currentPeriod this month as "YYYY-MM"
+ * @param {number} count how many months the transfer covers, 1..12
+ * @return {string[]} the months to settle, oldest first
+ */
+function allocateParkingMonths(takenPeriods, currentPeriod, count) {
+  const current = periodIndex(currentPeriod);
+  const n = Number(count);
+  if (current < 0) return [];
+  if (!Number.isInteger(n) || n < 1 || n > MAX_PARKING_PERIODS) return [];
+
+  const taken = new Set((Array.isArray(takenPeriods) ? takenPeriods : [])
+      .map(periodIndex)
+      .filter((index) => index >= 0));
+
+  const picked = [];
+  if (taken.size) {
+    // Every month between the first one on record and today that the house
+    // does not already hold. Anything before that first record is unknown.
+    const earliest = Math.min(...taken);
+    for (let i = earliest + 1; i < current && picked.length < n; i += 1) {
+      if (!taken.has(i)) picked.push(i);
+    }
+  }
+
+  // Then carry on from today, or from just after the furthest month held —
+  // whichever is later — so prepaying twice never buys the same month.
+  const latest = taken.size ? Math.max(...taken) : -1;
+  let next = Math.max(current, latest + 1);
+  while (picked.length < n) {
+    if (!taken.has(next)) picked.push(next);
+    next += 1;
+  }
+
+  return picked.sort((a, b) => a - b).map(periodFromIndex);
+}
+
+/**
+ * Months the house has skipped: unpaid, older than this month, and after the
+ * first month it has any record for. This is what the resident is asked about
+ * before a slip is filed, and what "ชำระต่อเนื่องถึง" stops at.
+ *
+ * @param {string[]} takenPeriods periods already pending or verified
+ * @param {string} currentPeriod this month as "YYYY-MM"
+ * @return {string[]} the unpaid months, oldest first
+ */
+function parkingArrears(takenPeriods, currentPeriod) {
+  const current = periodIndex(currentPeriod);
+  if (current < 0) return [];
+  const taken = new Set((Array.isArray(takenPeriods) ? takenPeriods : [])
+      .map(periodIndex)
+      .filter((index) => index >= 0));
+  if (!taken.size) return [];
+  const earliest = Math.min(...taken);
+  const gaps = [];
+  for (let i = earliest + 1; i < current; i += 1) {
+    if (!taken.has(i)) gaps.push(i);
+  }
+  return gaps.map(periodFromIndex);
+}
+
+// Month names as residents actually write them in a transfer memo: Thai in
+// full and abbreviated (with or without the trailing dot), and English in full
+// and in the usual three letters.
+const MEMO_MONTHS = [
+  ["มกราคม", "ม.ค", "มค", "january", "jan"],
+  ["กุมภาพันธ์", "ก.พ", "กพ", "february", "feb"],
+  ["มีนาคม", "มี.ค", "มีค", "march", "mar"],
+  ["เมษายน", "เม.ย", "เมย", "april", "apr"],
+  ["พฤษภาคม", "พ.ค", "พค", "may"],
+  ["มิถุนายน", "มิ.ย", "มิย", "june", "jun"],
+  ["กรกฎาคม", "ก.ค", "กค", "july", "jul"],
+  ["สิงหาคม", "ส.ค", "สค", "august", "aug"],
+  ["กันยายน", "ก.ย", "กย", "september", "sept", "sep"],
+  ["ตุลาคม", "ต.ค", "ตค", "october", "oct"],
+  ["พฤศจิกายน", "พ.ย", "พย", "november", "nov"],
+  ["ธันวาคม", "ธ.ค", "ธค", "december", "dec"],
+];
+
+/**
+ * Normalise a year as written on a slip into a Gregorian year.
+ *
+ * Residents write 2026, 2569 (Buddhist), 26, or 69 — all meaning the same
+ * year. Buddhist years run 543 ahead.
+ *
+ * @param {string} raw the digits found next to the month
+ * @param {number} currentYear this year, Gregorian
+ * @return {number} a Gregorian year, or 0 when it cannot be read
+ */
+function memoYear(raw, currentYear) {
+  const digits = String(raw || "").trim();
+  if (!/^\d{2}$|^\d{4}$/.test(digits)) return 0;
+  const value = Number(digits);
+  if (digits.length === 4) return value > 2400 ? value - 543 : value;
+  // Two digits: 69 is Buddhist 2569, 26 is Gregorian 2026. Decide by which
+  // one lands nearer to now rather than by a hard-coded cutoff.
+  const asGregorian = 2000 + value;
+  const asBuddhist = 2500 + value - 543;
+  return Math.abs(asGregorian - currentYear) <=
+    Math.abs(asBuddhist - currentYear) ? asGregorian : asBuddhist;
+}
+
+/**
+ * Read the month a resident named in the transfer memo.
+ *
+ * A memo of "ค่าจอดรถ feb 2026" is the clearest statement of intent on the
+ * whole slip, and it used to be thrown away. Returns "" unless a month is
+ * unambiguous, and refuses anything far from today so a stray number in an
+ * account or reference cannot be mistaken for a period.
+ *
+ * @param {string} memo the memo/note line read off the slip
+ * @param {string} currentPeriod this month as "YYYY-MM"
+ * @return {string} period key, or "" when the memo names no usable month
+ */
+function parseMemoPeriod(memo, currentPeriod) {
+  const current = parseParkingPeriod(currentPeriod);
+  if (!current) return "";
+  const text = String(memo || "").toLowerCase().replace(/[_/]/g, " ");
+  if (!text.trim()) return "";
+
+  let month = 0;
+  let after = "";
+  for (let i = 0; i < MEMO_MONTHS.length; i += 1) {
+    for (const name of MEMO_MONTHS[i]) {
+      // Thai has no word boundaries, so match the name then read whatever
+      // digits follow it as the year.
+      const at = text.indexOf(name);
+      if (at < 0) continue;
+      // A longer name already matched wins (e.g. "sept" over "sep").
+      if (month && month !== i + 1) return "";
+      month = i + 1;
+      const tail = text.slice(at + name.length, at + name.length + 8);
+      const found = /^[.\s]*(\d{2,4})/.exec(tail);
+      if (found && !after) after = found[1];
+    }
+  }
+  if (!month) return "";
+
+  const year = after ? memoYear(after, current.year) : current.year;
+  if (!year) return "";
+  const index = year * 12 + (month - 1);
+  const currentIndex = current.year * 12 + (current.month - 1);
+  // A memo may settle the recent past or buy a little ahead. Anything outside
+  // that is a misread, not an instruction.
+  if (index < currentIndex - 24 || index > currentIndex + 12) return "";
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
 module.exports = {
   MAX_PARKING_PERIODS,
   parseParkingPeriod,
@@ -152,4 +333,7 @@ module.exports = {
   inferParkingMonths,
   splitSlipAmount,
   nextParkingStart,
+  allocateParkingMonths,
+  parkingArrears,
+  parseMemoPeriod,
 };

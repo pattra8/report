@@ -2,6 +2,10 @@ const crypto = require("crypto");
 
 const admin = require("firebase-admin");
 const {GoogleAuth} = require("google-auth-library");
+const {
+  resolveLprPlate,
+  lprSearchPlates,
+} = require("./domains/lpr/plate-corrections");
 const {setGlobalOptions} = require("firebase-functions/v2");
 const {
   onDocumentCreated,
@@ -63,11 +67,13 @@ const {
 } = require("./domains/payments/house-billing");
 const {
   MAX_PARKING_PERIODS,
+  allocateParkingMonths,
+  parkingArrears,
+  parseMemoPeriod,
   parseParkingPeriod,
   parkingPeriodsFrom,
   inferParkingMonths,
   splitSlipAmount,
-  nextParkingStart,
 } = require("./domains/payments/parking-period");
 const {
   ADMIN_ACCESS_DEFAULTS,
@@ -109,6 +115,11 @@ const {
   overallStatus,
   probeStatus,
 } = require("./domains/health/status-policy");
+const {
+  auditOutageWindows,
+  isOutageAffectedCar,
+  nextAnprOutageState,
+} = require("./domains/health/anpr-outages");
 const {
   ADMIN_ACCESS_COLLECTION,
   ADMIN_DOCUMENTS_COLLECTION,
@@ -379,7 +390,7 @@ function buildLineMessage(issueType, data) {
   const priority = data.priority === "urgent" ?
     "ด่วนมาก" :
     data.priority === "high" ? "ด่วน" : "ปกติ";
-  const date = data.date || new Date().toLocaleDateString("th-TH");
+  const date = data.date || new Date().toLocaleDateString("th-TH-u-ca-gregory");
 
   return [
     `📢 ${issueType}`,
@@ -536,7 +547,7 @@ function buildAnnouncementText(data) {
   const title = String(data.title || "").trim();
   const category = String(data.category || "ทั่วไป").trim();
   const message = String(data.message || "").trim();
-  const date = new Date().toLocaleString("th-TH", {
+  const date = new Date().toLocaleString("th-TH-u-ca-gregory", {
     timeZone: "Asia/Bangkok",
     dateStyle: "medium",
     timeStyle: "short",
@@ -1607,7 +1618,7 @@ function buildLprReconciliationFlexMessage(report) {
     ready ? "#2F6B3C" : "#9A6700";
   const headerColor = !allOnline ? "#FDECEC" :
     ready ? "#EDF5E8" : "#FFF4D6";
-  const dateText = new Intl.DateTimeFormat("th-TH", {
+  const dateText = new Intl.DateTimeFormat("th-TH-u-ca-gregory", {
     dateStyle: "medium",
     timeStyle: "short",
     timeZone: "Asia/Bangkok",
@@ -1971,15 +1982,27 @@ function normalizeLprEventTime(value) {
 }
 
 /**
- * Treats camera sentinel values and explicit zero-confidence results as an
- * unreadable detection instead of a real license plate.
+ * Recognizes camera placeholders for a missing or unreadable plate.
+ * @param {*} value
+ * @return {boolean}
+ */
+function isUnreadableLprPlate(value) {
+  // The exit camera emits 11111 for a vehicle without a plate; its capture
+  // overlay says UnKnown-11111. Keep real plates such as กข11111 readable.
+  const placeholder =
+    /^(11111|unknown(?:[\s-]*11111)?|none|null|n\/a|no\s*plate|unlicensed)$/i;
+  return placeholder
+      .test(String(value || "").trim());
+}
+
+/**
  * @param {Object} event
  * @return {boolean}
  */
 function isReadableLprEvent(event) {
   const plate = String(event && event.plate || "").trim();
-  if (!plate || /^(unknown|none|null|n\/a|no\s*plate|unlicensed)$/i
-      .test(plate)) {
+  if (!plate || isUnreadableLprPlate(plate) ||
+      isUnreadableLprPlate(event && event.rawPlate)) {
     return false;
   }
   const confidence = String(event && event.confidence || "").trim();
@@ -2004,7 +2027,7 @@ function describeUnreadableReason(event) {
   if (!rawPlate) {
     return "กล้องไม่พบข้อความป้ายทะเบียน";
   }
-  if (/^(unknown|none|null|n\/a|no\s*plate|unlicensed)$/i.test(rawPlate)) {
+  if (isUnreadableLprPlate(rawPlate)) {
     return "ป้ายอ่านไม่ออก/ไม่มีป้าย";
   }
   if (confidenceText && Number.isFinite(confidence) && confidence <= 0) {
@@ -2472,6 +2495,7 @@ function parseLprTrafficEvent(payload) {
   const vehicleType = extractLprEventTag(payload, ["vehicleType"]);
   const plate = isReadableLprEvent({
     plate: normalizedPlate,
+    rawPlate,
     confidence,
   }) ? normalizedPlate : "";
 
@@ -2533,7 +2557,7 @@ function formatBangkokClock(hour, minute = 0) {
  * @return {string}
  */
 function formatBangkokDateLabel(epoch) {
-  return new Intl.DateTimeFormat("th-TH", {
+  return new Intl.DateTimeFormat("th-TH-u-ca-gregory", {
     weekday: "long",
     day: "numeric",
     month: "long",
@@ -2608,10 +2632,10 @@ async function buildDailyTrafficReport(
         .get(),
     buildExpectedLprState(),
   ]);
-  const events = eventSnap.docs.map((docSnap) => ({
+  const events = eventSnap.docs.map((docSnap) => resolveLprPlate({
     id: docSnap.id,
     ...docSnap.data(),
-  }));
+  }, expected));
   const residentSet = new Set(expected.plates);
   const readableEvents = events.filter(isReadableLprEvent);
   const residentEvents = readableEvents.filter((event) =>
@@ -2844,17 +2868,16 @@ async function buildPlateSearchReport(rawPlate) {
     throw new Error("Missing plate");
   }
 
-  const [eventSnap, expected] = await Promise.all([
-    db.collection(LPR_TRAFFIC_EVENTS_COLLECTION)
-        .where("plate", "==", plate)
-        .get(),
-    buildExpectedLprState(),
-  ]);
+  const expected = await buildExpectedLprState();
+  const eventSnap = await db.collection(LPR_TRAFFIC_EVENTS_COLLECTION)
+      .where("plate", "in", lprSearchPlates(plate, expected))
+      .get();
 
   const events = eventSnap.docs.map((docSnap) => ({
     id: docSnap.id,
     ...docSnap.data(),
-  }))
+  })).map((event) => resolveLprPlate(event, expected))
+      .filter((event) => event.plate === plate)
       .filter(isReadableLprEvent)
       .sort((a, b) => (a.capturedAtEpoch || 0) - (b.capturedAtEpoch || 0));
 
@@ -2894,6 +2917,8 @@ async function buildPlateSearchReport(rawPlate) {
         event.direction === "exit" ? "ออก" : "ผ่าน",
       cameraId: event.cameraId || "",
       imageUrl: lprEventImageUrl(event),
+      reportedPlate: event.reportedPlate || event.plate,
+      plateCorrection: event.plateCorrection || "",
     });
     eventGroups.set(reportDate, group);
   });
@@ -2984,8 +3009,10 @@ async function buildHouseSearchReport(rawHouseNo) {
   const plates = expected.plates.filter((plate) =>
     (expected.plateHouses[plate] || []).includes(houseNo));
   const chunks = [];
-  for (let index = 0; index < plates.length; index += 30) {
-    chunks.push(plates.slice(index, index + 30));
+  const searchPlates = [...new Set(plates.flatMap((plate) =>
+    lprSearchPlates(plate, expected)))];
+  for (let index = 0; index < searchPlates.length; index += 30) {
+    chunks.push(searchPlates.slice(index, index + 30));
   }
   const eventSnaps = await Promise.all(chunks.map((chunk) =>
     db.collection(LPR_TRAFFIC_EVENTS_COLLECTION)
@@ -2994,7 +3021,8 @@ async function buildHouseSearchReport(rawHouseNo) {
   const events = eventSnaps.flatMap((snap) => snap.docs.map((docSnap) => ({
     id: docSnap.id,
     ...docSnap.data(),
-  })))
+  }))).map((event) => resolveLprPlate(event, expected))
+      .filter((event) => plates.includes(event.plate))
       .filter(isReadableLprEvent)
       .sort((a, b) =>
         (a.capturedAtEpoch || 0) - (b.capturedAtEpoch || 0));
@@ -3045,6 +3073,8 @@ async function buildHouseSearchReport(rawHouseNo) {
       imageUrl: lprEventImageUrl(event),
       plate: event.plate,
       displayPlate: displayPlate(event.plate),
+      reportedPlate: event.reportedPlate || event.plate,
+      plateCorrection: event.plateCorrection || "",
       houses: expected.plateHouses[event.plate] || [houseNo],
       vehicleVision: profilesByPlate[event.plate] || null,
     });
@@ -3616,10 +3646,10 @@ async function buildOvernightSecurityReport(reportDate,
         .get(),
     buildExpectedLprState(),
   ]);
-  const events = eventSnap.docs.map((docSnap) => ({
+  const events = eventSnap.docs.map((docSnap) => resolveLprPlate({
     id: docSnap.id,
     ...docSnap.data(),
-  }));
+  }, expected));
   const residentSet = new Set(expected.plates);
   const readableEvents = events.filter(isReadableLprEvent);
 
@@ -3815,10 +3845,10 @@ async function buildSecurityAuditTrafficSlice(range) {
         .get(),
     buildExpectedLprState(),
   ]);
-  const events = eventSnap.docs.map((docSnap) => ({
+  const events = eventSnap.docs.map((docSnap) => resolveLprPlate({
     id: docSnap.id,
     ...docSnap.data(),
-  }));
+  }, expected));
   const residentSet = new Set(expected.plates);
   const readableEvents = events.filter(isReadableLprEvent);
   const externalEvents = readableEvents.filter((event) =>
@@ -3833,9 +3863,11 @@ async function buildSecurityAuditTrafficSlice(range) {
       entryEpoch: null,
       exitEpoch: null,
       firstEvent: event,
+      eventEpochs: [],
       entryEvent: null,
       exitEvent: null,
     };
+    agg.eventEpochs.push(event.capturedAtEpoch);
     if (event.capturedAtEpoch <= agg.firstEpoch) agg.firstEvent = event;
     agg.firstEpoch = Math.min(agg.firstEpoch, event.capturedAtEpoch);
     if (event.direction) agg.directions.add(event.direction);
@@ -3876,6 +3908,8 @@ async function buildSecurityAuditTrafficSlice(range) {
       .sort((a, b) => a.firstEpoch - b.firstEpoch)
       .map((agg) => ({
         plate: agg.plate,
+        firstEpoch: agg.firstEpoch,
+        eventEpochs: agg.eventEpochs,
         firstTime: formatBangkokHm(agg.firstEpoch),
         entryTime: agg.entryEpoch ? formatBangkokHm(agg.entryEpoch) : null,
         exitTime: agg.exitEpoch ? formatBangkokHm(agg.exitEpoch) : null,
@@ -3889,10 +3923,69 @@ async function buildSecurityAuditTrafficSlice(range) {
     timeRange: epochs.length ?
       `${formatBangkokHm(Math.min(...epochs))}–` +
       `${formatBangkokHm(Math.max(...epochs))}` : "",
+    eventCount: events.length,
     externalCars: enrichedExternalPlates.length,
     externalPlates: enrichedExternalPlates,
     unreadableDetections: events.length - readableEvents.length,
   };
+}
+
+/**
+ * Pairs guard-logged plates with LPR plates that differ only by a misread
+ * (OCR on either side swaps a letter or digit). A pair needs a small edit
+ * distance AND close capture times: <=1 edit within 30 min, or <=3 edits
+ * within 10 min (never more than half the shorter plate). Each plate pairs
+ * at most once, closest match first.
+ * @param {Array<{plate: string, epoch: number}>} logged Unmatched guard plates.
+ * @param {Array<{plate: string, epoch: number}>} seen Unmatched LPR plates.
+ * @return {Array<Object>} {logged, lpr, distance, minutes} pairs.
+ */
+function matchSecurityAuditPlates(logged, seen) {
+  const rules = [
+    {maxDistance: 1, maxMinutes: 30},
+    {maxDistance: 3, maxMinutes: 10},
+  ];
+  const chars = (plate) => Array.from(String(plate || "").replace(/\s+/g, ""));
+  const editDistance = (a, b) => {
+    let prev = Array.from({length: b.length + 1}, (_, j) => j);
+    for (let i = 1; i <= a.length; i += 1) {
+      const row = [i];
+      for (let j = 1; j <= b.length; j += 1) {
+        row[j] = Math.min(prev[j] + 1, row[j - 1] + 1,
+            prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      }
+      prev = row;
+    }
+    return prev[b.length];
+  };
+  const candidates = [];
+  logged.forEach((guard) => {
+    seen.forEach((camera) => {
+      if (!Number.isFinite(guard.epoch) || !Number.isFinite(camera.epoch)) {
+        return;
+      }
+      const a = chars(guard.plate);
+      const b = chars(camera.plate);
+      const distance = editDistance(a, b);
+      const minutes = Math.abs(guard.epoch - camera.epoch) / 60000;
+      const cap = Math.floor(Math.min(a.length, b.length) / 2);
+      const ok = distance > 0 && distance <= cap && rules.some((rule) =>
+        distance <= rule.maxDistance && minutes <= rule.maxMinutes);
+      if (ok) {
+        candidates.push({logged: guard.plate, lpr: camera.plate, distance,
+          minutes: Math.round(minutes)});
+      }
+    });
+  });
+  candidates.sort((x, y) => x.distance - y.distance || x.minutes - y.minutes);
+  const usedLogged = new Set();
+  const usedLpr = new Set();
+  return candidates.filter((pair) => {
+    if (usedLogged.has(pair.logged) || usedLpr.has(pair.lpr)) return false;
+    usedLogged.add(pair.logged);
+    usedLpr.add(pair.lpr);
+    return true;
+  });
 }
 
 /**
@@ -3921,16 +4014,19 @@ async function buildSecurityAuditReport(reportDate, startHour = 7,
   }).format(new Date(reportRange.startEpoch + 24 * 60 * 60 * 1000));
   const visitDates = [reportRange.reportDate];
   if (reportRange.crossesMidnight) visitDates.push(nextDate);
-  const [trafficReport, visitorSnaps, officerName] = await Promise.all([
-    buildSecurityAuditTrafficSlice(reportRange),
-    Promise.all(visitDates.map((visitDate) =>
-      db.collection(VISITOR_INTAKE_COLLECTION)
-          .where("visitDate", "==", visitDate)
-          .limit(500)
-          .get(),
-    )),
-    getSecurityShiftOfficerName(reportRange.shift),
-  ]);
+  const [trafficReport, visitorSnaps, officerName, cameraStatuses] =
+    await Promise.all([
+      buildSecurityAuditTrafficSlice(reportRange),
+      Promise.all(visitDates.map((visitDate) =>
+        db.collection(VISITOR_INTAKE_COLLECTION)
+            .where("visitDate", "==", visitDate)
+            .limit(500)
+            .get(),
+      )),
+      getSecurityShiftOfficerName(reportRange.shift),
+      db.getAll(...["8241", "8242"].map((cameraId) =>
+        db.collection(LPR_AGENT_C_STATUS_COLLECTION).doc(cameraId))),
+    ]);
   const visitorRecords = visitorSnaps.flatMap((snap) => snap.docs)
       .map((docSnap) => ({id: docSnap.id, ...(docSnap.data() || {})}))
       .filter((record) => {
@@ -3940,11 +4036,15 @@ async function buildSecurityAuditReport(reportDate, startHour = 7,
           createdAtMs < reportRange.endEpoch;
       });
 
+  // Visitor logs store "4ฒง 1808 กรุงเทพ" while LPR reads "4ฒง1808"; compare
+  // on the plate without its province so the two sources can match.
+  const plateKey = (raw) => normalizeVisitorPlate(
+      stripThaiProvinceForLookup(normalizeVisitorPlate(raw)));
   const visitorCarMap = new Map();
   const visitorMotorcycles = [];
   const purposeCounts = new Map();
   visitorRecords.forEach((record) => {
-    const plate = normalizeVisitorPlate(
+    const plate = plateKey(
         record.vehicleCapture && record.vehicleCapture.plateText,
     );
     const vehicleType = normalizeVisitorVehicleType(
@@ -3963,16 +4063,50 @@ async function buildSecurityAuditReport(reportDate, startHour = 7,
     purposeCounts.set(label, (purposeCounts.get(label) || 0) + 1);
   });
 
-  const visitorCarPlates = Array.from(visitorCarMap.keys());
   const externalPlates = (trafficReport.externalPlates || []).map((row) => ({
     ...row,
-    plate: normalizeVisitorPlate(row.plate || ""),
+    plate: plateKey(row.plate || ""),
   })).filter((row) => row.plate);
-  const missingPlates = externalPlates
-      .filter((row) => !visitorCarMap.has(row.plate))
-      .map((row) => row.plate);
-  const uncheckedCars = Math.max(0, externalPlates.length -
-    visitorCarPlates.length);
+  const lprPlates = new Set(externalPlates.map((row) => row.plate));
+  // A misread on either side (e.g. guard OCR "3ฒร 4468" vs camera
+  // "3ฒร 4466") would otherwise make the whole shift unassessable.
+  const lprEpochs = new Map(externalPlates.map((row) =>
+    [row.plate, Number(row.firstEpoch)]));
+  const recordEpoch = (record) => record.createdAt &&
+    record.createdAt.toMillis ? record.createdAt.toMillis() : NaN;
+  const fuzzyMatches = matchSecurityAuditPlates(
+      Array.from(visitorCarMap.entries())
+          .filter(([plate]) => !lprPlates.has(plate))
+          .map(([plate, record]) => ({plate, epoch: recordEpoch(record)})),
+      Array.from(lprPlates)
+          .filter((plate) => !visitorCarMap.has(plate))
+          .map((plate) => ({plate, epoch: lprEpochs.get(plate)})),
+  );
+  fuzzyMatches.forEach((pair) => {
+    const record = visitorCarMap.get(pair.logged);
+    visitorCarMap.delete(pair.logged);
+    visitorCarMap.set(pair.lpr, record);
+  });
+  const visitorCarPlates = Array.from(visitorCarMap.keys());
+  const outageWindows = auditOutageWindows(
+      cameraStatuses.map((snap) => snap.exists ? snap.data() || {} : {}),
+      reportRange);
+  const unmatchedPlates = Array.from(lprPlates)
+      .filter((plate) => !visitorCarMap.has(plate));
+  const excusedPlates = unmatchedPlates.filter((plate) =>
+    externalPlates.some((row) => row.plate === plate &&
+      isOutageAffectedCar(row, outageWindows)));
+  const excusedSet = new Set(excusedPlates);
+  const missingPlates = unmatchedPlates.filter((plate) =>
+    !excusedSet.has(plate));
+  // Count the same set of known Visitor plates for every card metric.
+  // During power interruptions, guard logs supply cars absent from LPR.
+  // Score known cars; forgive unmatched captures during confirmed outages.
+  const knownPlates = new Set([...lprPlates, ...visitorCarPlates]);
+  const visitorOnlyCars = visitorCarPlates.filter((plate) =>
+    !lprPlates.has(plate)).length;
+  const uncheckedCars = missingPlates.length;
+  const assessmentAvailable = knownPlates.size > 0;
   const missingPlatesDisplay = missingPlates.slice(0,
       Math.min(24, uncheckedCars));
   const missingPlatesLeft = Math.max(0, uncheckedCars -
@@ -3985,11 +4119,18 @@ async function buildSecurityAuditReport(reportDate, startHour = 7,
     generatedAt: new Date().toISOString(),
     securityOfficerName: String(officerNameOverride || officerName || "")
         .trim(),
-    carTotal: externalPlates.length || trafficReport.externalCars || 0,
+    carTotal: knownPlates.size,
+    lprCarTotal: lprPlates.size,
+    visitorOnlyCars,
+    fuzzyMatches,
+    excusedCars: excusedPlates.length,
+    excusedPlates,
+    assessmentAvailable,
     checkedCars: visitorCarPlates.length,
     uncheckedCars,
-    percent: externalPlates.length ?
-      Math.round((visitorCarPlates.length / externalPlates.length) * 100) : 0,
+    percent: assessmentAvailable ?
+      Math.round(((visitorCarPlates.length + excusedPlates.length) /
+        knownPlates.size) * 100) : null,
     unreadable: trafficReport.unreadableDetections || 0,
     scanUnreadable: trafficReport.unreadableDetections || 0,
     motorcycleCount: visitorMotorcycles.length,
@@ -4008,65 +4149,191 @@ async function buildSecurityAuditReport(reportDate, startHour = 7,
 }
 
 /**
- * Builds the guard-audit LINE card with badge-style unchecked plates.
+ * Rating tiers for the guard-audit card, keyed by getSecurityAuditTier().
+ * `tone` colors text on the cream body, `soft` tints the stat strip, and
+ * `from`/`to` paint the header gradient behind white text.
+ */
+const SECURITY_AUDIT_TIERS = {
+  full: {
+    tone: "#5F7F46", soft: "#EAF3DE", from: "#4C6B38", to: "#7C9C5E",
+    emoji: "🏆", name: "ยอดเยี่ยม",
+    message: "ตรวจบัตรครบทุกคัน ขอบคุณทีม รปภ. ครับ",
+  },
+  excellent: {
+    tone: "#2F7F73", soft: "#DFF0EC", from: "#256A60", to: "#4C9E90",
+    emoji: "🌟", name: "เยี่ยมมาก",
+    message: "เกือบครบทุกคันแล้ว เยี่ยมมากครับ",
+  },
+  good: {
+    tone: "#9A8420", soft: "#F6EFC9", from: "#7D6A12", to: "#B79E2E",
+    emoji: "👏", name: "ดีมาก",
+    message: "ทำได้ดีครับ ขอบคุณที่ช่วยกันตรวจ",
+  },
+  positive: {
+    tone: "#39749A", soft: "#E5F1F8", from: "#326B90", to: "#659BB8",
+    emoji: "👍", name: "ตรวจได้ดี",
+    message: "ขอบคุณทีม รปภ. กะหน้าช่วยกันตรวจให้ครบทุกคันนะครับ",
+  },
+  fair: {
+    tone: "#C47A2C", soft: "#FBEBD3", from: "#B26A1D", to: "#DB9A44",
+    emoji: "💪", name: "เพิ่มการตรวจอีกนิด",
+    message: "กะหน้าลองให้ครบ 100% นะครับ",
+  },
+  low: {
+    tone: "#BF4B3A", soft: "#FBE4DF", from: "#A63B2D", to: "#D2604E",
+    emoji: "💪", name: "ควรปรับปรุง",
+    message: "กะหน้าช่วยกันตรวจบัตรเพิ่มอีกนิดนะครับ",
+  },
+  unavailable: {
+    tone: "#8D7A66", soft: "#EFE7DA", from: "#7A6A58", to: "#A39380",
+    emoji: "📋", name: "ประเมินไม่ได้",
+    message: "ข้อมูล LPR ไม่เพียงพอสำหรับประเมิน",
+  },
+};
+
+/**
+ * Picks the guard-audit rating tier from the report's real counts.
+ * "full" requires zero unchecked cars, never just a rounded 100%.
+ * @param {Object} report
+ * @return {string} Key of SECURITY_AUDIT_TIERS.
+ */
+function getSecurityAuditTier(report) {
+  const available = report.percent !== null &&
+    Number.isFinite(report.percent) &&
+    report.assessmentAvailable !== false &&
+    Number(report.carTotal) > 0;
+  if (!available) return "unavailable";
+  if (Number(report.uncheckedCars) === 0) return "full";
+  if (report.percent >= 90) return "excellent";
+  if (report.percent >= 80) return "good";
+  if (report.percent >= 70) return "positive";
+  if (report.percent >= 50) return "fair";
+  return "low";
+}
+
+/**
+ * Star rating (0-5) shown on the guard-audit card. Stars follow their own
+ * cut-offs, independent of the color tier: full = 5, 80+ = 4.5,
+ * 60+ = 3, 50+ = 2, below 50 = 1. Only a true 100% earns five.
+ * @param {Object} report
+ * @return {number}
+ */
+function getSecurityAuditStars(report) {
+  const tierKey = getSecurityAuditTier(report);
+  if (tierKey === "unavailable") return 0;
+  if (tierKey === "full") return 5;
+  if (report.percent >= 80) return 4.5;
+  if (report.percent >= 60) return 3;
+  if (report.percent >= 50) return 2;
+  return 1;
+}
+
+/**
+ * Builds the guard-audit LINE card: a tier-colored header with the score,
+ * a 10-segment progress track, and up to six unchecked plates.
  * @param {Object} report
  * @return {Object}
  */
 function buildSecurityAuditFlexMessage(report) {
   const t = {
-    headBg: "#F8F3EA",
     bodyBg: "#FFFCF6",
-    cardBg: "#F2E7D3",
-    softCard: "#FBF7EF",
     title: "#34281F",
     text: "#47372B",
     label: "#8D7A66",
+    labelStrong: "#6F5D4B",
     line: "#E7DCCB",
-    green: "#5F7F46",
-    orange: "#C56E33",
-    red: "#BF4B3A",
     track: "#EADDCB",
-    greenBg: "#EAF3DE",
-    orangeBg: "#FFF6EA",
-    redBg: "#FCEBEB",
+    green: "#5F7F46",
+    white: "#FFFFFF",
+    whiteSoft: "#FFFFFFD9",
+    whiteDim: "#FFFFFF55",
+    divider: "#00000014",
+    pill: "#00000038",
+    pillLight: "#FFFFFFEB",
   };
-  const dateText = new Intl.DateTimeFormat("th-TH", {
+  const tierKey = getSecurityAuditTier(report);
+  const tier = SECURITY_AUDIT_TIERS[tierKey];
+  const available = tierKey !== "unavailable";
+  const starCount = getSecurityAuditStars(report);
+  const carTotal = Number(report.carTotal) || 0;
+  const checkedCars = Number(report.checkedCars) || 0;
+  const uncheckedCars = Number(report.uncheckedCars) || 0;
+  const excusedCars = Number(report.excusedCars) || 0;
+  // A rounded 100% must not show while any car is still unchecked.
+  const percent = available ?
+    Math.max(0, Math.min(uncheckedCars > 0 ? 99 : 100, report.percent)) :
+    null;
+  // Gregorian (ค.ศ.) year on purpose; do not use the default Buddhist era.
+  const dateText = new Intl.DateTimeFormat("th-TH-u-ca-gregory", {
     dateStyle: "medium",
     timeZone: "Asia/Bangkok",
   }).format(new Date(`${report.reportDate}T12:00:00+07:00`));
   const timeText = `${report.displayWindowLabel || report.windowLabel} น.`;
-  const shiftTitle = report.shift === "night" ?
-    "ตรวจงาน รปภ. กะกลางคืน" : "ตรวจงาน รปภ. กะกลางวัน";
+  const isNight = report.shift === "night";
+  const shiftName = isNight ? "กะกลางคืน" : "กะกลางวัน";
+  const shiftLabel = `${isNight ? "🦉" : "🌤️"} ${shiftName}`;
+  // Day = light pill / dark text, night = dark pill / white text, so the
+  // shift reads at a glance even without the emoji.
+  const shiftPill = isNight ?
+    {bg: t.pill, color: t.white} : {bg: t.pillLight, color: t.title};
+
   const stat = (value, label, color) => ({
     type: "box",
     layout: "vertical",
     flex: 1,
-    backgroundColor: t.softCard,
-    cornerRadius: "9px",
-    paddingAll: "8px",
+    alignItems: "center",
+    // Label first so it reads naturally in Thai: "ตรวจแล้ว" → "5 คัน".
     contents: [
-      {type: "text", text: String(value), size: "md", weight: "bold",
-        color, align: "center"},
-      {type: "text", text: label, size: "xxs", color: t.label,
-        align: "center", margin: "xs", wrap: true},
+      // sm label shrinks only if a narrow phone cannot fit it on one line.
+      {type: "text", text: label, size: "sm", weight: "bold",
+        color: t.labelStrong, align: "center", wrap: false,
+        adjustMode: "shrink-to-fit"},
+      {type: "text", text: value, size: "lg", weight: "bold", color,
+        align: "center", margin: "xs", wrap: false,
+        adjustMode: "shrink-to-fit"},
     ],
   });
-  const statRow = (items) => ({
+  const statDivider = {type: "separator", color: t.divider};
+
+  // Smooth track; the filled part uses the same gradient as the header.
+  const fillFlex = available && percent > 0 ?
+    Math.max(1, Math.min(100, percent)) : 0;
+  const progressFill = fillFlex > 0 ? [{
+    type: "box",
+    layout: "vertical",
+    flex: fillFlex,
+    cornerRadius: "6px",
+    backgroundColor: tier.tone,
+    background: {
+      type: "linearGradient",
+      angle: "0deg",
+      startColor: tier.from,
+      endColor: tier.to,
+    },
+    contents: [{type: "filler"}],
+  }] : [];
+  if (fillFlex > 0 && fillFlex < 100) {
+    progressFill.push({type: "box", layout: "vertical",
+      flex: 100 - fillFlex, contents: [{type: "filler"}]});
+  }
+  const progress = {
     type: "box",
     layout: "horizontal",
+    height: "12px",
     margin: "sm",
-    spacing: "xs",
-    contents: items,
-  });
+    backgroundColor: t.track,
+    cornerRadius: "6px",
+    contents: progressFill.length ? progressFill : [{type: "filler"}],
+  };
+
   const plateBadge = (plate) => ({
     type: "box",
     layout: "vertical",
-    width: "72px",
+    flex: 1,
     height: "30px",
     borderColor: t.text,
-    borderWidth: "1.5px",
+    borderWidth: "1px",
     cornerRadius: "7px",
-    paddingAll: "4px",
     justifyContent: "center",
     alignItems: "center",
     contents: [
@@ -4075,184 +4342,169 @@ function buildSecurityAuditFlexMessage(report) {
         adjustMode: "shrink-to-fit"},
     ],
   });
-  const badgeRows = chunkArray(report.missingPlatesDisplay || [], 4)
-      .map((row) => ({
-        type: "box",
-        layout: "horizontal",
-        spacing: "sm",
-        margin: "sm",
-        contents: row.map((plate) => plateBadge(plate)),
-      }));
-  if (!badgeRows.length) {
-    badgeRows.push({
-      type: "text",
-      text: "ไม่มีทะเบียนที่ค้างตรวจ",
-      size: "sm",
-      color: t.label,
-      align: "center",
-      margin: "sm",
-    });
+  const shownPlates = available ?
+    (report.missingPlates || []).slice(0, 6) : [];
+  const platesLeft = available ?
+    Math.max(0, uncheckedCars - shownPlates.length) : 0;
+  const plateSlots = shownPlates.map(plateBadge);
+  if (platesLeft > 0) {
+    plateSlots.push({type: "text", text: `อีก ${platesLeft} คัน`,
+      size: "xs", color: t.label, align: "center", gravity: "center",
+      flex: 1});
   }
-  if (report.totalMissingLabel) {
-    badgeRows.push({
-      type: "text",
-      text: report.totalMissingLabel,
-      size: "xs",
-      color: t.label,
-      align: "center",
-      margin: "sm",
-    });
-  }
-  const purposeRows = (report.purposes || []).map((item) => ({
+  const plateRows = chunkArray(plateSlots, 3).map((row) => ({
     type: "box",
     layout: "horizontal",
+    spacing: "sm",
     margin: "sm",
-    contents: [
-      {type: "text", text: item.label, size: "sm", color: t.text,
-        flex: 4, wrap: true},
-      {type: "text", text: `${item.count} รายการ`, size: "sm",
-        weight: "bold", color: t.orange, align: "end", flex: 2,
-        wrap: false, adjustMode: "shrink-to-fit"},
-    ],
+    contents: [...row, ...Array.from({length: 3 - row.length},
+        () => ({type: "filler"}))],
   }));
-  const performancePercent = Math.max(0, Math.min(100, report.percent || 0));
-  const progressFlex = Math.max(1, Math.min(100, performancePercent));
-  const progressBgFlex = Math.max(1, 100 - progressFlex);
-  const percentColor = performancePercent >= 80 ? t.green :
-    performancePercent >= 50 ? t.orange : t.red;
-  const scanUnreadable = Number(
-      report.scanUnreadable || report.unreadable || 0,
-  );
+
+  const starAssetBase = "https://firebasestorage.googleapis.com/v0/b/" +
+    "pattra8-54c3f.firebasestorage.app/o/lpr_assets%2F" +
+    "security-audit-star-v1-";
+  const stars = available ? [{
+    type: "box",
+    layout: "baseline",
+    spacing: "2px",
+    margin: "xs",
+    contents: Array.from({length: 5}, (_, index) => {
+      const fill = starCount >= index + 1 ? "full" :
+        starCount > index ? "half" : "empty";
+      return {
+        type: "icon",
+        url: `${starAssetBase}${fill}.png?alt=media&token=` +
+          "9f3d7d58-2db0-4ff5-8655-f2726243fb47",
+        size: "20px",
+        aspectRatio: "1:1",
+      };
+    }),
+  }] : [{type: "text", text: "ตรวจบัตรรถยนต์", size: "xs",
+    color: t.whiteSoft, margin: "xs"}];
+
   return {
     type: "flex",
-    altText: `ตรวจงาน รปภ. ${dateText}: ประเมิน รปภ. ${performancePercent}%`,
+    altText: `ตรวจงาน รปภ. ${shiftName} ${dateText}: ` + (available ?
+      `${tier.name} คะแนน ${percent}% (ตรวจ ${checkedCars} คัน` +
+      ` ยกเว้น ${excusedCars} คัน)` :
+      "ประเมินไม่ได้"),
     contents: {
       type: "bubble",
       size: "giga",
       header: {
         type: "box",
         layout: "vertical",
-        paddingAll: "14px",
-        backgroundColor: t.headBg,
+        paddingAll: "16px",
+        backgroundColor: tier.from,
+        background: {
+          type: "linearGradient",
+          angle: "135deg",
+          startColor: tier.from,
+          endColor: tier.to,
+        },
         contents: [
-          {type: "text", text: shiftTitle, size: "md",
-            weight: "bold", color: t.title, wrap: true},
+          {type: "box", layout: "horizontal", alignItems: "center",
+            contents: [
+              {type: "text", text: "ตรวจงาน รปภ.", size: "lg",
+                weight: "bold", color: t.white, flex: 0},
+              {type: "filler"},
+              {type: "box", layout: "horizontal", flex: 0,
+                backgroundColor: shiftPill.bg, cornerRadius: "14px",
+                paddingTop: "4px", paddingBottom: "4px",
+                paddingStart: "10px", paddingEnd: "12px",
+                contents: [
+                  {type: "text", text: shiftLabel, size: "sm",
+                    weight: "bold", color: shiftPill.color, flex: 0,
+                    wrap: false},
+                ]},
+            ]},
           {type: "text", text: `${dateText} · ${timeText}`, size: "xs",
-            color: t.label, margin: "sm", wrap: false,
+            color: t.whiteSoft, margin: "xs", wrap: false,
             adjustMode: "shrink-to-fit"},
+          {type: "box", layout: "horizontal", margin: "lg",
+            alignItems: "center", contents: [
+              {type: "text", text: tier.emoji, size: "4xl", flex: 0},
+              {type: "box", layout: "vertical", flex: 1, margin: "md",
+                contents: [
+                  {type: "text", text: tier.name, size: "md",
+                    weight: "bold", color: t.white, wrap: false,
+                    adjustMode: "shrink-to-fit"},
+                  ...stars,
+                ]},
+              ...(available ? [{type: "text", text: `${percent}%`,
+                size: "4xl", weight: "bold", color: t.white, flex: 0,
+                align: "end", wrap: false}] : []),
+            ]},
         ],
       },
       body: {
         type: "box",
         layout: "vertical",
-        paddingAll: "14px",
+        paddingAll: "16px",
         backgroundColor: t.bodyBg,
         contents: [
-          {
-            type: "box",
-            layout: "vertical",
-            backgroundColor: t.cardBg,
-            cornerRadius: "12px",
-            paddingAll: "13px",
-            contents: [
-              {type: "text",
-                text: "รถยนต์ Visitor ที่อ่านทะเบียนได้ทั้งหมด",
-                size: "xs",
-                weight: "bold", color: t.label, align: "center"},
-              {type: "text", text: `${report.carTotal} คัน`, size: "xl",
-                weight: "bold", color: t.green, align: "center",
-                margin: "xs"},
-              statRow([
-                stat(`${report.checkedCars} คัน`, "ตรวจแล้ว", t.green),
-                stat(`${report.uncheckedCars} คัน`, "ยังไม่ตรวจบัตร", t.red),
-                stat(`${scanUnreadable} ครั้ง`, "สแกนไม่พบ", t.orange),
-              ]),
-              {
-                type: "box",
-                layout: "horizontal",
-                margin: "md",
-                spacing: "sm",
-                alignItems: "center",
-                contents: [
-                  {
-                    type: "box",
-                    layout: "vertical",
-                    flex: 1,
-                    contents: [
-                      {type: "text", text: "ประเมิน รปภ.", size: "xs",
-                        color: t.label, margin: "none"},
-                      {
-                        type: "box",
-                        layout: "horizontal",
-                        height: "8px",
-                        margin: "xs",
-                        backgroundColor: t.track,
-                        cornerRadius: "4px",
-                        contents: [
-                          {type: "box", layout: "vertical",
-                            flex: progressFlex,
-                            backgroundColor: percentColor,
-                            cornerRadius: "4px",
-                            contents: [{type: "filler"}]},
-                          {type: "box", layout: "vertical",
-                            flex: progressBgFlex,
-                            contents: [{type: "filler"}]},
-                        ],
-                      },
-                    ],
-                  },
-                  {
-                    type: "text",
-                    text: `${performancePercent}%`,
-                    flex: 0,
-                    size: "md",
-                    weight: "bold",
-                    color: percentColor,
-                    align: "end",
-                    wrap: false,
-                    adjustMode: "shrink-to-fit",
-                  },
-                ],
-              },
-            ],
-          },
-          {type: "separator", margin: "md", color: t.line},
-          {type: "text", text: "ทะเบียนค้างตรวจบัตร", size: "sm",
-            weight: "bold", color: t.title, margin: "md"},
-          ...badgeRows,
-          {type: "separator", margin: "md", color: t.line},
+          {type: "box", layout: "horizontal", contents: [
+            {type: "text", text: "ตรวจบัตรรถยนต์", size: "xs",
+              weight: "bold", color: t.label, flex: 1},
+            ...(available ? [{type: "text",
+              text: excusedCars > 0 ?
+                `ตรวจ ${checkedCars} · ยกเว้น ${excusedCars} คัน` :
+                `${checkedCars} / ${carTotal} คัน`, size: "xs",
+              weight: "bold", color: tier.tone, align: "end",
+              flex: 0}] : []),
+          ]},
+          progress,
+          {type: "text", text: excusedCars > 0 ?
+            `ยกเว้น ${excusedCars} คันช่วง ANPR ขัดข้อง ไม่หักคะแนน รปภ.` :
+            tier.message, size: "sm", wrap: true,
+          margin: "md", color: available ? t.text : t.label},
           {
             type: "box",
             layout: "horizontal",
-            margin: "md",
-            alignItems: "center",
+            margin: "lg",
+            paddingAll: "10px",
+            cornerRadius: "12px",
+            backgroundColor: tier.soft,
             contents: [
-              {type: "text",
-                text: "รถมอเตอร์ไซต์เข้า-ออกหมู่บ้านทั้งหมด",
-                size: "md", weight: "bold", color: t.title, flex: 4,
-                wrap: true},
-              {type: "text", text: `${report.motorcycleCount} คัน`,
-                size: "md", weight: "bold", color: t.green, align: "end",
-                flex: 2},
+              stat(available ? `${carTotal} คัน` : "ไม่ทราบ", "รถ Visitor",
+                  available ? t.title : t.label),
+              statDivider,
+              stat(`${checkedCars} คัน`, "ตรวจแล้ว", t.green),
+              statDivider,
+              stat(available ? `${uncheckedCars} คัน` : "ไม่ทราบ",
+                  "ไม่ได้ตรวจบัตร",
+                  available && uncheckedCars > 0 ? tier.tone : t.label),
             ],
           },
-          {type: "text", text: "เหตุผลที่มาติดต่อ", size: "sm",
-            weight: "bold", color: t.title, margin: "md"},
-          ...(purposeRows.length ? purposeRows.slice(0, 4) : [{
-            type: "text",
-            text: "ยังไม่มีรายการผู้มาติดต่อในกะนี้",
-            size: "xs",
-            color: t.label,
-            align: "center",
-            margin: "sm",
-          }]),
-          {
-            type: "text",
-            text: `ข้อมูลจริง · Pattra Watch · ${
-              formatBangkokHm(Date.now())
-            } น.`,
-            size: "xxs", color: t.label, align: "center", margin: "md",
-          },
+          ...(plateRows.length ? [
+            {type: "text", text: "ทะเบียนที่ไม่ได้ตรวจบัตร", size: "sm",
+              weight: "bold", color: t.title, margin: "lg"},
+            ...plateRows,
+          ] : []),
+          {type: "separator", margin: "lg", color: t.line},
+          {type: "box", layout: "horizontal", margin: "md",
+            backgroundColor: "#EDF2EC", cornerRadius: "12px",
+            paddingAll: "14px", spacing: "md", alignItems: "center",
+            contents: [
+              {type: "text", text: "🛵", size: "xxl", flex: 0},
+              {type: "box", layout: "vertical", flex: 1, spacing: "xs",
+                contents: [
+                  {type: "text", text: "มอเตอร์ไซค์", size: "sm",
+                    weight: "bold", color: t.text, wrap: true},
+                  {type: "text", text: "เข้า–ออกโครงการวันนี้", size: "xxs",
+                    color: t.label, wrap: true},
+                ]},
+              {type: "text", size: "xxl", flex: 0, contents: [
+                {type: "span",
+                  text: `${Number(report.motorcycleCount) || 0}`,
+                  weight: "bold", color: t.text},
+                {type: "span", text: " คัน", size: "sm", color: t.text},
+              ]},
+            ]},
+          {type: "text",
+            text: `อัปเดต ${formatBangkokHm(Date.now())} น.`,
+            size: "xxs", color: t.label, align: "end", margin: "md"},
         ],
       },
     },
@@ -4333,12 +4585,13 @@ function shiftBangkokDate(reportDate, dayOffset) {
  * @return {string}
  */
 function formatWeeklyThaiDateRange(startDate, endDate) {
-  const format = (date, includeYear) => new Intl.DateTimeFormat("th-TH", {
-    day: "numeric",
-    month: "long",
-    ...(includeYear ? {year: "numeric"} : {}),
-    timeZone: "Asia/Bangkok",
-  }).format(new Date(`${date}T12:00:00+07:00`));
+  const format = (date, includeYear) => new Intl.DateTimeFormat(
+      "th-TH-u-ca-gregory", {
+        day: "numeric",
+        month: "long",
+        ...(includeYear ? {year: "numeric"} : {}),
+        timeZone: "Asia/Bangkok",
+      }).format(new Date(`${date}T12:00:00+07:00`));
   const sameYear = startDate.slice(0, 4) === endDate.slice(0, 4);
   const sameMonth = startDate.slice(0, 7) === endDate.slice(0, 7);
   if (sameMonth) {
@@ -4395,7 +4648,11 @@ async function buildWeeklySafetyReport(endDate) {
     const carTotal = Number(report.carTotal || 0);
     return total + Math.min(carTotal, Number(report.checkedCars || 0));
   }, 0);
-  const uncheckedCars = Math.max(0, visitorCars - checkedCars);
+  const excusedCars = sum(guardReports, "excusedCars");
+  const uncheckedCars = Math.max(0, visitorCars - checkedCars - excusedCars);
+  const assessmentAvailable = visitorCars > 0 && guardReports.every(
+      (report) => report.assessmentAvailable ||
+        (report.carTotal === 0 && report.trafficReport.eventCount > 0));
   const cameraComplete = trafficReports.every((report) =>
     Number(report.cameraCounts && report.cameraCounts["8241"] || 0) > 0 &&
     Number(report.cameraCounts && report.cameraCounts["8242"] || 0) > 0);
@@ -4409,10 +4666,13 @@ async function buildWeeklySafetyReport(endDate) {
     residentCars: sum(trafficReports, "residentCars"),
     externalCars: sum(trafficReports, "externalCars"),
     visitorCars,
+    excusedCars,
     checkedCars,
     uncheckedCars,
-    checkPercent: visitorCars ?
-      Math.round((checkedCars / visitorCars) * 1000) / 10 : 0,
+    assessmentAvailable,
+    checkPercent: assessmentAvailable ?
+      Math.round(((checkedCars + excusedCars) / visitorCars) * 1000) / 10 :
+      null,
     motorcycleCount: sum(guardReports, "motorcycleCount"),
     unreadableDetections: sum(trafficReports, "unreadableDetections"),
     busiestHour,
@@ -4536,8 +4796,12 @@ function buildWeeklySafetyFlexMessage(report) {
       },
     ],
   }));
+  const assessmentAvailable = report.checkPercent !== null &&
+    report.assessmentAvailable !== false;
   const checkPercent = Math.max(0, Math.min(
       100, Number(report.checkPercent || 0)));
+  const assessmentText = assessmentAvailable ?
+    `${checkPercent}%` : "ประเมินไม่ได้";
   const progressFlex = Math.max(1, Math.round(checkPercent));
   const remainingFlex = Math.max(1, 100 - progressFlex);
   const peakText = report.busiestHour === null ? "ยังไม่มีข้อมูลช่วงพีค" :
@@ -4550,7 +4814,7 @@ function buildWeeklySafetyFlexMessage(report) {
   return {
     type: "flex",
     altText: `สรุปความปลอดภัย ${report.dateLabel}: ` +
-      `ตรวจ Visitor ${checkPercent}%`,
+      `ตรวจ Visitor ${assessmentText}`,
     contents: {
       type: "bubble",
       size: "giga",
@@ -4693,7 +4957,9 @@ function buildWeeklySafetyFlexMessage(report) {
                 contents: [
                   {
                     type: "text",
-                    text: "อัตราตรวจและบันทึกข้อมูล",
+                    text: report.excusedCars > 0 ?
+                      `คะแนนตรวจ (ยกเว้น ANPR ${report.excusedCars} คัน)` :
+                      "อัตราตรวจและบันทึกข้อมูล",
                     size: "xs",
                     weight: "bold",
                     color: t.ink,
@@ -4701,7 +4967,8 @@ function buildWeeklySafetyFlexMessage(report) {
                   },
                   {
                     type: "text",
-                    text: `${checkPercent}%`,
+                    text: assessmentText,
+                    wrap: true,
                     size: "xl",
                     weight: "bold",
                     color: t.green,
@@ -4722,7 +4989,7 @@ function buildWeeklySafetyFlexMessage(report) {
                     type: "box",
                     layout: "vertical",
                     flex: progressFlex,
-                    backgroundColor: t.green,
+                    backgroundColor: assessmentAvailable ? t.green : t.track,
                     cornerRadius: "4px",
                     contents: [{type: "filler"}],
                   },
@@ -7065,7 +7332,7 @@ function buildVisitorDailyFlexMessage(report) {
     red: "#A8432F",
     muted: "#8A7E6D",
   };
-  const dateText = new Intl.DateTimeFormat("th-TH", {
+  const dateText = new Intl.DateTimeFormat("th-TH-u-ca-gregory", {
     dateStyle: "long",
     timeZone: "Asia/Bangkok",
   }).format(new Date(`${report.reportDate}T12:00:00+07:00`));
@@ -10098,7 +10365,7 @@ exports.lineFlexRoutingAdmin = onRequest({
             "ทดสอบส่งเข้า production",
           description: "ข้อความตัวอย่างจากหน้า LINE Flex Routing",
           priority: "normal",
-          date: new Date().toLocaleDateString("th-TH"),
+          date: new Date().toLocaleDateString("th-TH-u-ca-gregory"),
         });
         await sendLinePush(targetId, text);
         res.status(200).json({
@@ -10904,6 +11171,12 @@ exports.guardAuditDaySummary = onSchedule(
       logger.info("guardAuditDaySummary complete", {
         reportDate: report.reportDate,
         window: report.windowLabel,
+        carTotal: report.carTotal,
+        lprCarTotal: report.lprCarTotal,
+        lprEventCount: report.trafficReport.eventCount,
+        visitorOnlyCars: report.visitorOnlyCars,
+        assessmentAvailable: report.assessmentAvailable,
+        percent: report.percent,
         checkedCars: report.checkedCars,
         uncheckedCars: report.uncheckedCars,
         lineSent: report.lineSent,
@@ -10932,6 +11205,12 @@ exports.guardAuditNightSummary = onSchedule(
       logger.info("guardAuditNightSummary complete", {
         reportDate: report.reportDate,
         window: report.windowLabel,
+        carTotal: report.carTotal,
+        lprCarTotal: report.lprCarTotal,
+        lprEventCount: report.trafficReport.eventCount,
+        visitorOnlyCars: report.visitorOnlyCars,
+        assessmentAvailable: report.assessmentAvailable,
+        percent: report.percent,
         checkedCars: report.checkedCars,
         uncheckedCars: report.uncheckedCars,
         lineSent: report.lineSent,
@@ -11023,7 +11302,10 @@ exports.lprWatchRun = onRequest(
       try {
         const type = String(params.type || "daily");
         const date = String(params.date || getTodayBangkokDate());
-        const sendLine = String(params.sendLine || "true") !== "false";
+        // `||` would turn a JSON boolean false into "true" and send anyway.
+        const sendLine = String(
+          params.sendLine === undefined ? "true" : params.sendLine,
+        ) !== "false";
         let targetIdOverride = "";
         if (params.targetId) {
           const target = await resolveLineTarget(params.targetId);
@@ -11492,17 +11774,21 @@ exports.lprVehicleVision = onDocumentUpdated(
  * @param {string} fingerprint
  * @param {string} severity
  * @param {string} message
+ * @param {boolean} healthAlert Independent operational alert to Pattra Watch.
  * @return {Promise<boolean>}
  */
-async function sendAgentCShadowAlert(fingerprint, severity, message) {
-  const configSnap = await db.doc(LPR_AGENT_C_CONFIG_PATH).get();
-  const config = configSnap.exists ? configSnap.data() || {} : {};
+async function sendAgentCShadowAlert(fingerprint, severity, message,
+    healthAlert = false) {
+  const configSnap = healthAlert ? null :
+    await db.doc(LPR_AGENT_C_CONFIG_PATH).get();
+  const config = configSnap && configSnap.exists ?
+    configSnap.data() || {} : {};
   // Either switch opens the alert channel: the backlog monitor has to be able
   // to speak up while the Gemini audit half is off.
   const gateOpen = config.enabled === true ||
     config.backlogMonitorEnabled === true;
-  if (!gateOpen || config.shadowMode !== true ||
-      config.testTargetId !== LPR_AGENT_C_TEST_TARGET_ID) {
+  if (!healthAlert && (!gateOpen || config.shadowMode !== true ||
+      config.testTargetId !== LPR_AGENT_C_TEST_TARGET_ID)) {
     return false;
   }
   await resolveLineTarget(LPR_AGENT_C_TEST_TARGET_ID);
@@ -11513,6 +11799,7 @@ async function sendAgentCShadowAlert(fingerprint, severity, message) {
     const previous = alertSnap.exists ? alertSnap.data() || {} : {};
     const cooldown = previous.cooldownUntil &&
       previous.cooldownUntil.toMillis ? previous.cooldownUntil.toMillis() : 0;
+    if (healthAlert && previous.status === "open") return false;
     if (cooldown > Date.now()) return false;
     transaction.set(alertRef, {
       fingerprint,
@@ -11528,10 +11815,18 @@ async function sendAgentCShadowAlert(fingerprint, severity, message) {
     return true;
   });
   if (!acquired) return false;
-  await sendLinePushMessages(LPR_AGENT_C_TEST_TARGET_ID, [{
-    type: "text",
-    text: `Agent C [${severity}]\n${message}`,
-  }]);
+  try {
+    await sendLinePushMessages(LPR_AGENT_C_TEST_TARGET_ID, [{
+      type: "text",
+      text: `Agent C [${severity}]\n${message}`,
+    }]);
+  } catch (error) {
+    await alertRef.set({
+      status: "failed",
+      cooldownUntil: admin.firestore.Timestamp.fromMillis(0),
+    }, {merge: true});
+    throw error;
+  }
   await alertRef.set({
     status: "open",
     lineSentAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -11647,6 +11942,12 @@ async function runAgentCHealthProbe() {
     const eventStale = eventStatus === "warning" || eventStatus === "offline";
     const consecutiveEventStale = eventStale ?
       Number(previous.consecutiveEventStale || 0) + 1 : 0;
+    const physicalFailureSinceEpoch = probe.ok ? 0 :
+      Number(previous.physicalFailureSinceEpoch || nowEpoch);
+    const outageState = peerCameraId ? nextAnprOutageState(previous, {
+      nowEpoch, lastEventEpoch, eventStale: consecutiveEventStale >= 3,
+      physicalFailure: failures >= 3, probeOk: probe.ok,
+    }) : {};
     const severity = failures >= 3 ? "critical" :
       failures >= 2 ? "warning" : "healthy";
     await ref.set({
@@ -11659,6 +11960,8 @@ async function runAgentCHealthProbe() {
       captureError: probe.captureError || "",
       latencyMs: probe.latencyMs,
       consecutiveFailures: failures,
+      physicalFailureSinceEpoch,
+      ...outageState,
       eventStatus,
       peerCameraId: peerCameraId || null,
       peerEventsSince,
@@ -11674,34 +11977,43 @@ async function runAgentCHealthProbe() {
     }, {merge: true});
     if (!probe.ok && failures >= 2) {
       await sendAgentCShadowAlert(
-          `probe-${probe.cameraId}`,
+          `probe-${probe.cameraId}-${physicalFailureSinceEpoch}-${severity}`,
           severity.toUpperCase(),
-          `${probe.cameraId} probe ไม่ผ่าน ${failures} ครั้งติดต่อกัน`,
+          `${probe.cameraId} probe ไม่ผ่าน ${failures} ครั้งติดต่อกัน\n` +
+          "กรุณาตรวจสอบระบบ https://pattra8.com/system-health/",
+          true,
       );
     }
     if (probe.ok && Number(previous.consecutiveFailures || 0) >= 2) {
       await sendAgentCShadowAlert(
-          `recovered-${probe.cameraId}`,
+          `recovered-${probe.cameraId}-` +
+          `${previous.physicalFailureSinceEpoch || 0}`,
           "RECOVERED",
-          `${probe.cameraId} กลับมาออนไลน์แล้ว`,
+          `${probe.cameraId} API/ภาพกลับมาแล้ว ยังต้องตรวจ ANPR event`,
+          true,
       );
     }
     if (eventStale && consecutiveEventStale >= 3) {
       const staleMinutes = Math.floor((nowEpoch - lastEventEpoch) / 60000);
       await sendAgentCShadowAlert(
-          `anpr-stale-${probe.cameraId}`,
+          `anpr-stale-${probe.cameraId}-${lastEventEpoch}-${eventStatus}`,
           eventStatus === "offline" ? "CRITICAL" : "WARNING",
           `${probe.cameraId} ANPR event เงียบ ${staleMinutes} นาที ` +
-          `แต่ ${peerCameraId} มี ${peerEventsSince} events ระหว่างนั้น`,
+          `แต่ ${peerCameraId} มี ${peerEventsSince} events ระหว่างนั้น\n` +
+          `กรุณาตรวจสอบ/รีบูตกล้อง${probe.cameraId === "8242" ? "ขาออก" :
+            "ขาเข้า"}\nhttps://pattra8.com/system-health/`,
+          true,
       );
     }
     if (eventStatus === "online" &&
         lastEventEpoch > Number(previous.observedLastEventEpoch || 0) &&
-        Number(previous.consecutiveEventStale || 0) >= 3) {
+        previous.activeAnprOutage && !outageState.activeAnprOutage) {
       await sendAgentCShadowAlert(
-          `anpr-recovered-${probe.cameraId}`,
+          `anpr-recovered-${probe.cameraId}-` +
+          `${previous.activeAnprOutage.startEpoch}`,
           "RECOVERED",
           `${probe.cameraId} กลับมาส่ง ANPR event แล้ว`,
+          true,
       );
     }
   }
@@ -12399,24 +12711,18 @@ async function buildAgentCWindow(reportDate, startHour, endHour) {
     Date.parse(
         `${reportDate}T${String(endHour).padStart(2, "0")}:00:00+07:00`,
     );
-  const [eventSnap, residentSnap] = await Promise.all([
+  const [eventSnap, expected] = await Promise.all([
     db.collection(LPR_TRAFFIC_EVENTS_COLLECTION)
         .where("capturedAtEpoch", ">=", startEpoch)
         .where("capturedAtEpoch", "<", endEpoch)
         .get(),
-    db.collection(RESIDENTS_COLLECTION).get(),
+    buildExpectedLprState(),
   ]);
-  const residentSet = new Set();
-  residentSnap.docs.forEach((docSnap) => {
-    const item = docSnap.data() || {};
-    normalizePlateArray(item.cars || []).forEach((plate) =>
-      residentSet.add(plate),
-    );
-  });
-  const events = eventSnap.docs.map((docSnap) => ({
+  const residentSet = new Set(expected.plates);
+  const events = eventSnap.docs.map((docSnap) => resolveLprPlate({
     id: docSnap.id,
     ...docSnap.data(),
-  }));
+  }, expected));
   const readable = events.filter(isReadableLprEvent);
   const unique = new Set(readable.map((item) => item.plate));
   const resident = new Set(readable
@@ -14789,7 +15095,6 @@ const PP_ADMIN_NOTIFICATION_EMAIL = "mrteam388@gmail.com";
 const {
   periodLabel: ppPeriodLabel,
   renderReceiptHtml: ppReceiptHtml,
-  prepareReceiptEmailHtml: ppPrepareReceiptEmailHtml,
 } = require("./domains/payments/receipt-template");
 
 async function ppSendEmail(to, subject, html) {
@@ -14799,10 +15104,7 @@ async function ppSendEmail(to, subject, html) {
     const r = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {Authorization: `Bearer ${key}`, "Content-Type": "application/json"},
-      body: JSON.stringify({
-        from: PP_FROM, to: [to], subject,
-        html: ppPrepareReceiptEmailHtml(html),
-      }),
+      body: JSON.stringify({from: PP_FROM, to: [to], subject, html}),
     });
     if (!r.ok) {
       const t = await r.text().catch(() => "");
@@ -14893,7 +15195,9 @@ async function ppReadParkingSlip(
     slipDataUrl, houseNo, fallbackAmount, wantedStart,
 ) {
   const empty = {
-    periods: [], amount: 0, bank: "", confidence: 0, exact: false, error: "",
+    periods: [], arrears: [], amount: 0, bank: "", payerName: "",
+    memo: "", memoPeriod: "", startedFrom: "", confidence: 0, exact: false,
+    error: "",
   };
   const slip = ppParseSlip(slipDataUrl);
   if (!slip) return {...empty, error: "กรุณาแนบรูปสลิป"};
@@ -14931,12 +15235,28 @@ async function ppReadParkingSlip(
   const now = new Date(Date.now() + 7 * 60 * 60 * 1000); // Bangkok
   const currentPeriod = `${now.getUTCFullYear()}-` +
     `${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-  // A resident settling a past month names the month themselves; otherwise
-  // carry on from the first month they do not already hold.
+  // Which months this slip settles, in order of how well we know the payer's
+  // intent:
+  //   1. the month the resident picked on the page — they were asked outright;
+  //   2. the month written in the transfer memo ("ค่าจอดรถ feb 2026"), which
+  //      is the payer saying it in their own words on the slip itself;
+  //   3. otherwise the months they have skipped, oldest first.
+  // A memo month the house already holds is ignored rather than refused — the
+  // memo may just be describing an earlier payment.
   const chosen = String(wantedStart || "").trim();
-  const start = parseParkingPeriod(chosen) ?
-    chosen : nextParkingStart(taken, currentPeriod);
-  const periods = parkingPeriodsFrom(start, months);
+  const memoPeriod = parseMemoPeriod(ocr && ocr.memo, currentPeriod);
+  const memoUsable = memoPeriod && !taken.includes(memoPeriod);
+  let startedFrom = "arrears";
+  let periods;
+  if (parseParkingPeriod(chosen)) {
+    startedFrom = "resident";
+    periods = parkingPeriodsFrom(chosen, months);
+  } else if (memoUsable) {
+    startedFrom = "memo";
+    periods = parkingPeriodsFrom(memoPeriod, months);
+  } else {
+    periods = allocateParkingMonths(taken, currentPeriod, months);
+  }
 
   // Never sell a month the house already holds, whichever direction we came
   // from — the committee would otherwise see two rows for one month.
@@ -14950,8 +15270,19 @@ async function ppReadParkingSlip(
 
   return {
     periods,
+    // What the house still owes, so the page can say so before asking for a
+    // slip rather than after the fact.
+    arrears: parkingArrears(taken, currentPeriod),
+    // Kept for the committee's review card: the memo as written, the month it
+    // was read as, and which rule actually chose the months above.
+    memo: ocr && ocr.memo || "",
+    memoPeriod,
+    startedFrom,
     amount,
     bank: ocr && ocr.bank || "",
+    // The name as it appears on the slip. Evidence, not the receipt name —
+    // the committee compares it with the house register at review time.
+    payerName: ocr && ocr.payerName || "",
     confidence: ocr ? Number(ocr.confidence) || 0 : 0,
     exact: guess.auto,
     error: periods.length ? "" : "คำนวณเดือนจากยอดไม่ได้",
@@ -15003,7 +15334,12 @@ async function ppAnalyzeSlipImage(buffer, contentType) {
             "name exactly as shown if the full name is masked, for example " +
             "\"นางสาว ญาดา ท.\" or \"นายพสิษฐ์ ศ.\". Do not use PATTRA VILLA8, " +
             "นิติบุคคลหมู่บ้านจัดสรร ภัทราวิลล่า 8, or the recipient account " +
-            "as payerName. Use visible evidence " +
+            "as payerName; " +
+            "(5) memo — the memo / note / บันทึกช่วยจำ line the sender typed " +
+            "with the transfer, copied VERBATIM and left empty when there is " +
+            "none. Do not translate it, tidy it, or invent one; it often " +
+            "names the month being paid for, e.g. \"ค่าจอดรถ feb 2026\". " +
+            "Use visible evidence " +
             "only. If a field is not clearly visible, leave it empty and " +
             "lower confidence."},
           {inlineData: {mimeType: contentType || "image/jpeg",
@@ -15022,9 +15358,12 @@ async function ppAnalyzeSlipImage(buffer, contentType) {
             amount: {type: "NUMBER"},
             bank: {type: "STRING"},
             payerName: {type: "STRING"},
+            memo: {type: "STRING"},
             confidence: {type: "NUMBER"},
           },
-          required: ["houseNo", "amount", "bank", "payerName", "confidence"],
+          required: [
+            "houseNo", "amount", "bank", "payerName", "memo", "confidence",
+          ],
         },
       },
     }),
@@ -15046,6 +15385,7 @@ async function ppAnalyzeSlipImage(buffer, contentType) {
     amount: Number.isFinite(amount) && amount > 0 ? amount : null,
     bank: ppCleanImportText(parsed.bank, 40),
     payerName: ppCleanImportText(parsed.payerName, 160),
+    memo: ppCleanImportText(parsed.memo, 200),
     confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0)),
   };
 }
@@ -15060,6 +15400,12 @@ function ppMapDoc(doc) {
     year: d.year,
     amount: d.amount,
     payerName: d.payerName || "",
+    // What OCR read off the slip image, kept apart from payerName (which the
+    // receipt is issued in). Never back-filled from the house register, so an
+    // empty value honestly means "could not read it".
+    slipPayerName: d.slipPayerName || "",
+    slipMemo: d.slipMemo || "",
+    periodSource: d.periodSource || "",
     email: d.email || "",
     slipUrl: d.slipUrl || "",
     status: d.status,
@@ -15363,6 +15709,7 @@ exports.pattraPay = onRequest(
             payload.planId = plan.id;
             payload.ocrAmount = amount > 0 ? amount : null;
             payload.bank = ocr && ocr.bank || "";
+            payload.slipPayerName = ocr && ocr.payerName || "";
             payload.confidence = ocr ? String(ocr.confidence) : "";
             payload.reviewNote = amount > 0 ?
               "ผ่อนชำระ — ยอดอ่านจากสลิปอัตโนมัติ กรุณาตรวจก่อนยืนยัน" :
@@ -15578,10 +15925,21 @@ exports.pattraPay = onRequest(
               payload.source = "resident_upload";
               payload.ocrAmount = read.amount;
               payload.bank = read.bank;
+              payload.slipPayerName = read.payerName;
+              payload.slipMemo = read.memo;
+              payload.periodSource = read.startedFrom;
               payload.confidence = String(read.confidence);
+              // Say where the month came from as well as the amount: a month
+              // taken from the memo is a reading of the slip, and the
+              // committee should be able to check it against the image.
+              const whichMonth = read.startedFrom === "memo" ?
+                ` · งวดตาม memo บนสลิป ("${read.memo}")` :
+                read.startedFrom === "resident" ?
+                  " · งวดที่ลูกบ้านเลือกเอง" :
+                  " · งวดตามเดือนที่ค้างเก่าสุด";
               payload.reviewNote =
-                `อ่านยอดจากสลิปอัตโนมัติ ${read.amount.toFixed(2)} บาท — ` +
-                "กรุณาตรวจก่อนยืนยัน";
+                `อ่านยอดจากสลิปอัตโนมัติ ${read.amount.toFixed(2)} บาท` +
+                whichMonth + " — กรุณาตรวจก่อนยืนยัน";
             }
             if (groupId) {
               payload.groupId = groupId;
@@ -15607,6 +15965,9 @@ exports.pattraPay = onRequest(
               bank: read.bank,
               confidence: read.confidence,
               exact: read.exact,
+              memo: read.memo,
+              memoPeriod: read.memoPeriod,
+              startedFrom: read.startedFrom,
             } : null,
           });
           return;
@@ -15864,6 +16225,10 @@ exports.pattraPay = onRequest(
               period: periods[index],
               amount: rows[index] / 100,
               payerName,
+              // Admin-entered rows are typed straight off the slip image, so
+              // the same value is the slip evidence. Verify may later replace
+              // payerName with the register name; this copy stays put.
+              slipPayerName: payerName,
               email: "", slipUrl, status: "pending", source: "admin_upload",
               bank, transactionRef,
               createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -16824,7 +17189,7 @@ async function storeIssueAttachment(issueId, upload) {
  */
 async function announceIssueToWatchGroup(issue) {
   try {
-    const bangkokTime = new Date().toLocaleString("th-TH", {
+    const bangkokTime = new Date().toLocaleString("th-TH-u-ca-gregory", {
       timeZone: "Asia/Bangkok",
       dateStyle: "medium",
       timeStyle: "short",
@@ -17386,6 +17751,17 @@ exports.estateIssueCleanup = onSchedule(
 // Recovery/session tests inject an in-memory store; no production I/O.
 // ===========================================================================
 module.exports.__visitorTest = {
+  resolveLprPlate,
+  lprSearchPlates,
+  isReadableLprEvent,
+  parseLprTrafficEvent,
+  describeUnreadableReason,
+  buildSecurityAuditFlexMessage,
+  matchSecurityAuditPlates,
+  formatBangkokDateLabel,
+  formatWeeklyThaiDateRange,
+  buildWeeklySafetyFlexMessage,
+  getSecurityAuditRange,
   getTrafficDayRange,
   getOvernightRange,
   buildPattraWatchFlex,

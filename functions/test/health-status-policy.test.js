@@ -53,7 +53,7 @@ test("ANPR freshness warns and escalates when the peer stays active", () => {
   const activePeer = now - 5 * 60 * 1000;
   assert.equal(anprEventStatus({
     nowEpoch: now,
-    lastEventEpoch: now - 3 * 60 * 60 * 1000,
+    lastEventEpoch: now - 90 * 60 * 1000,
     peerLastEventEpoch: activePeer,
     peerEventsSince: 6,
   }), "warning");
@@ -142,4 +142,16 @@ test("LINE monitoring is warning while a confirmed outage is offline", () => {
     botApiOk: false,
     webhookApiOk: false,
   }), "offline");
+});
+
+
+test("ANPR warns at one hour and escalates at two hours", () => {
+  const now = 10 * 3600000;
+  const input = {nowEpoch: now, peerLastEventEpoch: now, peerEventsSince: 5};
+  assert.equal(anprEventStatus({...input,
+    lastEventEpoch: now - 3599999}), "online");
+  assert.equal(anprEventStatus({...input,
+    lastEventEpoch: now - 3600000}), "warning");
+  assert.equal(anprEventStatus({...input,
+    lastEventEpoch: now - 7200000}), "offline");
 });
