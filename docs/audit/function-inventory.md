@@ -68,9 +68,9 @@ Primary collections/config: `visitor_intake_logs`, `visitor_intake_sessions`,
 | `lprReconciliation` | HTTP | Run/read reconciliation | Not found |
 | `lprGuardLookup` | HTTP | Guard plate lookup | `lprcheck/index.html` |
 | `lprEventWebhook` | HTTP webhook | Receive LPR traffic event | LPR appliance |
-| `dailyTrafficSummary` | Schedule daily 00:05 | Build prior-day traffic report | Scheduler |
+| `dailyTrafficSummary` | Schedule daily 19:15 | Day-shift (07:00–19:00) traffic card, sent 15 min after the shift | Scheduler |
 | `dailyTrafficReport` | HTTP | Query/edit daily traffic report | `lprlog/index.html`, `visitorboard/index.html` |
-| `overnightSecuritySummary` | Schedule daily 07:30 | Overnight report | Scheduler |
+| `overnightSecuritySummary` | Schedule daily 07:15 | Night-shift (19:00 prev. day–07:00) card, sent 15 min after the shift; doc id = morning date | Scheduler |
 | `guardAuditDaySummary` | Schedule daily 19:30 | Day guard audit | Scheduler |
 | `guardAuditNightSummary` | Schedule daily 07:30 | Night guard audit | Scheduler |
 | `overnightSecurityReport` | HTTP | Read/manage overnight report | Not found |

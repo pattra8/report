@@ -2499,16 +2499,19 @@ function parseLprTrafficEvent(payload) {
  * Returns Bangkok day boundaries for a YYYY-MM-DD date.
  * @param {string} reportDate
  * @param {number} startHour inclusive start hour (default 0)
+ * @param {number} endHour exclusive end hour (default 24 = next midnight)
  * @return {Object}
  */
-function getTrafficDayRange(reportDate, startHour = 0) {
+function getTrafficDayRange(reportDate, startHour = 0, endHour = 24) {
   const cleanDate = String(reportDate || "").trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
     throw new Error("Invalid report date");
   }
   const sh = String(startHour).padStart(2, "0");
   const startEpoch = Date.parse(`${cleanDate}T${sh}:00:00+07:00`);
-  const endEpoch = Date.parse(`${cleanDate}T23:59:59.999+07:00`) + 1;
+  const endEpoch = endHour >= 24 ?
+    Date.parse(`${cleanDate}T23:59:59.999+07:00`) + 1 :
+    Date.parse(`${cleanDate}T${String(endHour).padStart(2, "0")}:00:00+07:00`);
   return {reportDate: cleanDate, startEpoch, endEpoch};
 }
 
@@ -2550,8 +2553,15 @@ function displayPlate(plate) {
       .replace(/^(.+?)(\d{1,4})$/, "$1 $2");
 }
 
-// Day card covers 07:00–23:59 so it complements the night card (00:00–07:00).
+// Default start for full-day traffic views (lprlog, weekly summary).
 const DAILY_REPORT_START_HOUR = 7;
+// Guard shifts for the Pattra Watch LINE cards: day 07:00–19:00, night
+// 19:00–07:00 the next morning. Each card is sent 15 minutes after its shift
+// ends (19:15 / 07:15) so late camera events are included.
+const DAY_SHIFT_START_HOUR = 7;
+const DAY_SHIFT_END_HOUR = 19;
+const NIGHT_SHIFT_START_HOUR = 19;
+const NIGHT_SHIFT_END_HOUR = 7;
 
 /**
  * Returns yesterday's calendar date in Bangkok.
@@ -2585,11 +2595,12 @@ function getYesterdayBangkokDate() {
  * Builds one daily traffic summary from stored LPR events.
  * @param {string} reportDate
  * @param {number} [startHour] Hour the report day starts (default 07:00).
+ * @param {number} [endHour] Exclusive end hour (default 24 = midnight).
  * @return {Promise<Object>}
  */
 async function buildDailyTrafficReport(
-    reportDate, startHour = DAILY_REPORT_START_HOUR) {
-  const range = getTrafficDayRange(reportDate, startHour);
+    reportDate, startHour = DAILY_REPORT_START_HOUR, endHour = 24) {
+  const range = getTrafficDayRange(reportDate, startHour, endHour);
   const [eventSnap, expected] = await Promise.all([
     db.collection(LPR_TRAFFIC_EVENTS_COLLECTION)
         .where("capturedAtEpoch", ">=", range.startEpoch)
@@ -2726,6 +2737,8 @@ async function buildDailyTrafficReport(
 
   return {
     reportDate: range.reportDate,
+    startHour,
+    endHour,
     generatedAt: new Date().toISOString(),
     timeRange,
     totalDetections: events.length,
@@ -3088,9 +3101,9 @@ async function buildHouseSearchReport(rawHouseNo) {
 }
 
 /**
- * Builds the shared "Pattra Watch" overview Flex card used by both the daily
- * and the night report. Leads with the total cars through the system, then
- * splits into resident (by house) and visitor (listed) plus unreadable.
+ * Builds the shared "Pattra Watch" shift card used by both the day
+ * (07:00–19:00) and night (19:00–07:00) report. One summary block (total,
+ * resident/visitor split, unreadable, hourly strip) then the visitor list.
  * @param {Object} report normalized traffic report
  * @param {Object} [opts] {variant: "daily"|"night", title, windowText}
  * @return {Object}
@@ -3152,85 +3165,143 @@ function buildPattraWatchFlex(report, opts) {
   const pal = palettes[themeName] || palettes.classic;
   const t = {...(night ? pal.night : pal.day),
     logo: night ? logoLight : logoDark};
-  const title = o.title ||
-    (night ? "สรุปรถเข้า–ออก ช่วงกลางคืน" : "สรุปรถเข้า–ออก ประจำวัน");
-  const windowText = o.windowText || (night ? report.windowLabel : "ทั้งวัน");
-  const dateText = new Intl.DateTimeFormat("th-TH", {
-    dateStyle: "long", timeZone: "Asia/Bangkok",
-  }).format(new Date(`${report.reportDate}T12:00:00+07:00`));
-  const stat = (value, label, color, sub) => ({
-    type: "box", layout: "vertical", flex: 1, contents: [
-      {type: "text", text: String(value), size: "xxl", weight: "bold",
-        color, align: "center"},
-      {type: "text", text: label, size: "xs", color: t.label,
-        align: "center", margin: "xs", wrap: true},
-      ...(sub ? [sub] : []),
+  const shiftName = night ? "กะกลางคืน" : "กะกลางวัน";
+  const title = o.title || `สรุปรถเข้า–ออก (${shiftName})`;
+  const thaiDate = (ymd, options) => new Intl.DateTimeFormat(
+      "th-TH-u-ca-gregory", {...options, timeZone: "Asia/Bangkok"},
+  ).format(new Date(`${ymd}T12:00:00+07:00`));
+  // A cross-midnight night shift is dated by the evening it starts; the end
+  // date only appears next to the end time.
+  const crossesMidnight = night && report.crossesMidnight;
+  // Built from parts: dateStyle "long" adds the era ("ค.ศ.") on some ICU
+  // builds.
+  const dateYmd = crossesMidnight && report.shiftStartDate ?
+    report.shiftStartDate : report.reportDate;
+  const dateText = `${thaiDate(dateYmd, {day: "numeric", month: "long"})} ` +
+    String(dateYmd).slice(0, 4);
+  const windowText = (() => {
+    if (o.windowText) return `${o.windowText} น.`;
+    const [startLabel, endLabel] = String(report.windowLabel || "")
+        .split("–");
+    if (crossesMidnight && startLabel && endLabel) {
+      const endShort = thaiDate(report.reportDate,
+          {day: "numeric", month: "short"});
+      return `${startLabel} – ${endLabel} (${endShort})`;
+    }
+    return `${report.windowLabel || "ทั้งวัน"} น.`;
+  })();
+  // Visitor-list times use a calmer green/red than the summary numbers.
+  const listColors = themeName === "cream" ?
+    (night ? {inTime: "#A3BE76", outTime: "#E39278"} :
+      {inTime: "#557F3E", outTime: "#A9533F"}) :
+    {inTime: t.green, outTime: t.red};
+  const fill = (color, extra) => ({type: "box", layout: "vertical",
+    backgroundColor: color, contents: [{type: "filler"}], ...(extra || {})});
+  // One tile per group: color stripe matching the split bar, label first,
+  // then the number. Unreadable is counted in ครั้ง, not cars.
+  const tile = (color, label, value, unit) => ({
+    type: "box", layout: "horizontal", flex: 1, spacing: "sm",
+    backgroundColor: t.bodyBg, cornerRadius: "10px", paddingAll: "10px",
+    contents: [
+      fill(color, {width: "4px", cornerRadius: "2px"}),
+      {type: "box", layout: "vertical", flex: 1, contents: [
+        {type: "text", text: label, size: "xxs", color: t.label},
+        {type: "text", size: "lg", weight: "bold", color, contents: [
+          {type: "span", text: String(value || 0)},
+          {type: "span", text: ` ${unit}`, size: "xxs", weight: "regular",
+            color: t.label},
+        ]},
+      ]},
     ],
   });
-  // เข้า/ออก sub-line: green = เข้า, red = ออก, spaced away from the label.
-  const io = (inN, outN) => ({
-    type: "text", size: "xxs", align: "center", margin: "md", wrap: false,
-    adjustMode: "shrink-to-fit", contents: [
-      {type: "span", text: `เข้า ${inN || 0}`, color: t.green,
-        weight: "bold"},
-      {type: "span", text: "   ·   ", color: t.label},
-      {type: "span", text: `ออก ${outN || 0}`, color: t.red,
-        weight: "bold"},
-    ],
-  });
-  // Hourly density heatmap (daily card only). Each bar is a vertical column:
-  // an empty spacer (flex) on top + a colored bar (flex) at the bottom, inside
-  // a fixed-height row so the flex ratios become bar heights.
-  const buildHeatmap = () => {
+  // Hourly traffic as one row of cells shaded by volume, scaled between the
+  // shift's quietest and busiest hour so a flat day still shows its peaks.
+  const buildHeatStrip = () => {
     const counts = report.hourlyCounts || [];
-    const hours = [];
-    for (let h = 7; h <= 23; h++) hours.push(h);
-    const maxC = Math.max(1, ...hours.map((h) => counts[h] || 0));
-    const barColor = (c) => {
-      if (!c) return t.line;
-      const r = c / maxC;
-      if (r >= 0.85) return t.orange;
-      if (r >= 0.55) return "#C98A3C";
-      if (r >= 0.30) return t.green;
-      return "#CBDDB4";
+    const startHour = Number.isInteger(report.startHour) ?
+      report.startHour : (night ? 19 : 7);
+    const endHour = Number.isInteger(report.endHour) ?
+      report.endHour % 24 : (night ? 7 : 19);
+    const endsMidHour = /:(?!00)\d{2}$/.test(
+        String(report.windowLabel || ""));
+    const span = ((endHour - startHour + 24) % 24 || 24) +
+      (endsMidHour ? 1 : 0);
+    const hours = Array.from({length: Math.min(span, 24)}, (_, i) =>
+      (startHour + i) % 24);
+    const values = hours.map((h) => counts[h] || 0);
+    const maxC = Math.max(...values);
+    const minC = Math.min(...values);
+    const busiest = hours[values.indexOf(maxC)];
+    const ramp = night ?
+      ["#544937", "#7A6340", "#B5844A", "#E0A85E"] :
+      ["#E3D3B8", "#E0B57A", "#D08A42", "#A85E2E"];
+    const shade = (c) => {
+      const r = maxC === minC ? 0 : (c - minC) / (maxC - minC);
+      return ramp[r >= 0.85 ? 3 : r >= 0.6 ? 2 : r >= 0.3 ? 1 : 0];
     };
-    const bars = hours.map((h) => {
-      const c = counts[h] || 0;
-      const val = Math.max(2, Math.round((c / maxC) * 100));
-      const empty = Math.max(0, 100 - val);
-      const col = [];
-      if (empty > 0) {
-        col.push({type: "box", layout: "vertical", flex: empty,
-          contents: [{type: "filler"}]});
+    const hh = (h) => String(h).padStart(2, "0");
+    // Hour ticks every ~quarter of the shift, with the end hour pinned right.
+    const step = Math.max(1, Math.round(hours.length / 4));
+    const tickIdx = [0, step, step * 2, step * 3]
+        .filter((i) => i < hours.length);
+    const tickText = (h, align) => ({type: "text", text: hh(h),
+      size: "xxs", color: t.label, flex: align === "end" ? 0 : 1,
+      align: align || "start"});
+    const ticks = tickIdx.map((idx, i) => {
+      const next = i + 1 < tickIdx.length ? tickIdx[i + 1] : hours.length;
+      if (i + 1 < tickIdx.length) {
+        return {...tickText(hours[idx]), flex: next - idx};
       }
-      col.push({type: "box", layout: "vertical", flex: val,
-        backgroundColor: barColor(c), cornerRadius: "2px",
-        contents: [{type: "filler"}]});
-      return {type: "box", layout: "vertical", flex: 1, contents: col};
-    });
-    const periodLabel = (txt, flex) => ({
-      type: "box", layout: "vertical", flex, contents: [
-        {type: "text", text: txt, size: "xs", color: t.label, align: "center"},
-      ],
+      return {type: "box", layout: "horizontal", flex: next - idx, contents: [
+        tickText(hours[idx]),
+        tickText((hours[hours.length - 1] + 1) % 24, "end"),
+      ]};
     });
     return {type: "box", layout: "vertical", margin: "lg", contents: [
-      {type: "box", layout: "horizontal", contents: [
-        {type: "text", text: "ช่วงที่รถเข้าออกเยอะ", size: "xs",
-          color: t.label, flex: 3},
-        {type: "text",
-          text: report.busiestHour === null ? "" :
-            `พีค ${String(report.busiestHour).padStart(2, "0")}:00 น.`,
-          size: "xs", color: t.orange, weight: "bold", align: "end", flex: 2},
+      {type: "box", layout: "baseline", contents: [
+        {type: "text", text: "ช่วงที่รถเข้าออกเยอะ", size: "xxs",
+          color: t.label, flex: 1},
+        {type: "text", size: "xxs", color: t.orange, weight: "bold", flex: 0,
+          text: maxC ? `พีค ${hh(busiest)}:00–${hh((busiest + 1) % 24)}:00` :
+            "ยังไม่มีข้อมูล"},
       ]},
-      {type: "box", layout: "horizontal", height: "54px", spacing: "xs",
-        margin: "sm", contents: bars},
-      {type: "box", layout: "horizontal", margin: "sm", contents: [
-        periodLabel("เช้า", 5),
-        periodLabel("กลางวัน", 5),
-        periodLabel("เย็น", 4),
-        periodLabel("ค่ำ", 3),
-      ]},
+      {type: "box", layout: "horizontal", height: "16px", spacing: "xs",
+        margin: "md", contents: values.map((c) =>
+          fill(maxC ? shade(c) : t.line, {flex: 1, cornerRadius: "3px"}))},
+      {type: "box", layout: "horizontal", margin: "sm", contents: ticks},
     ]};
+  };
+  // Total, resident/visitor split bar, three tiles and the hourly strip in
+  // one block.
+  const buildSummary = () => {
+    const resident = report.residentCars || 0;
+    const external = report.externalCars || 0;
+    const split = [
+      ...(resident ? [fill(t.green, {flex: resident})] : []),
+      ...(external ? [fill(t.orange, {flex: external})] : []),
+    ];
+    return {type: "box", layout: "vertical", backgroundColor: t.heroBg,
+      cornerRadius: "lg", paddingAll: "16px", contents: [
+        {type: "box", layout: "baseline", contents: [
+          {type: "text", text: "รถผ่านประตูทั้งหมด", size: "sm",
+            weight: "bold", color: t.title, flex: 1},
+          {type: "text", text: String(report.uniqueCars || 0), size: "xxl",
+            weight: "bold", color: t.title, flex: 0},
+          {type: "text", text: "คัน", size: "sm", color: t.label, flex: 0,
+            margin: "sm"},
+        ]},
+        {type: "box", layout: "horizontal", height: "10px", margin: "md",
+          cornerRadius: "5px", spacing: "xs",
+          contents: split.length ? split : [fill(t.line, {flex: 1})]},
+        {type: "box", layout: "horizontal", margin: "lg", spacing: "sm",
+          contents: [
+            tile(t.green, "รถลูกบ้าน", resident, "คัน"),
+            tile(t.orange, "รถภายนอก", external, "คัน"),
+            tile(t.red, "สแกนไม่พบ", report.unreadableDetections, "ครั้ง"),
+          ]},
+        {type: "separator", margin: "lg", color: t.line},
+        buildHeatStrip(),
+      ]};
   };
   const dirText = (dirs) => {
     const out = [];
@@ -3252,35 +3323,43 @@ function buildPattraWatchFlex(report, opts) {
     const vision = normalizeVehicleVision(row.vehicleVision);
     if (vision.confidence < LPR_VISION_MIN_CONFIDENCE) return "";
     const name = [vision.make, vision.model].filter(Boolean).join(" ");
-    const color = colorLabels[vision.color] || "";
-    return [name, color ? `สี${color}` : ""].filter(Boolean).join(" · ");
+    return [name, colorLabels[vision.color] || ""]
+        .filter(Boolean).join(" · ");
   };
   const MAX = 40;
   const externalPlates = report.externalPlates || [];
-  const timeSpan = (text, color, weight = "regular") => ({
-    type: "span", text, color, weight,
+  // Entry and exit each get a fixed-width cell placed straight in the row so
+  // every row's times line up in two columns, even when one side is "—".
+  // Kept flat (no wrapper box) to stay well under LINE's 30 KB bubble limit.
+  const shiftStartMinutes = (Number.isInteger(report.startHour) ?
+    report.startHour : (night ? 19 : 7)) * 60;
+  const minutesIntoShift = (hm) => {
+    const [h, m] = String(hm).split(":").map(Number);
+    return (h * 60 + m - shiftStartMinutes + 1440) % 1440;
+  };
+  const timeCell = (text, color, width, align) => ({
+    type: "box", layout: "vertical", width, contents: [
+      {type: "text", text, size: "xs", color, align},
+    ],
   });
-  const visitorTimeContents = (row) => {
-    const contents = [];
-    // Exit shown before entry means either a camera clock problem or a car
-    // that left and came back — either way the pair needs a human look.
-    if (row.entryTime && row.exitTime && row.exitTime < row.entryTime) {
-      contents.push(timeSpan("⚠️ ", t.orange));
+  const visitorTimes = (row) => {
+    if (!row.entryTime && !row.exitTime) {
+      return [{type: "text", size: "xs", color: t.label, flex: 0,
+        align: "end", text: `${dirText(row.directions || [])} ${
+          row.firstTime || "—"}`}];
     }
-    if (row.entryTime) {
-      contents.push(timeSpan(row.entryTime, t.green, "bold"));
-    } else if (!row.exitTime) {
-      contents.push(timeSpan(`${dirText(row.directions)} `, t.label));
-      contents.push(timeSpan(row.firstTime || "—", t.label, "bold"));
-      return contents;
-    } else {
-      contents.push(timeSpan("—", t.label));
-    }
-    contents.push(timeSpan(" → ", t.label));
-    contents.push(row.exitTime ?
-      timeSpan(row.exitTime, t.red, "bold") :
-      timeSpan("—", t.label));
-    return contents;
+    // Exit before entry means a camera clock problem or a car that left and
+    // came back — flag the pair for a human look. Times are compared from the
+    // shift start so 23:40 → 00:35 on the night shift is not flagged.
+    const odd = row.entryTime && row.exitTime &&
+      minutesIntoShift(row.exitTime) < minutesIntoShift(row.entryTime);
+    return [
+      timeCell(row.entryTime || "—",
+          row.entryTime ? listColors.inTime : t.muted, "40px", "end"),
+      // Start-aligned so the arrow stays in one column when exit is "—".
+      timeCell(`${odd ? "⚠" : "→"} ${row.exitTime || "—"}`,
+          row.exitTime ? listColors.outTime : t.muted, "58px", "start"),
+    ];
   };
   const makeRow = (row) => {
     const vehicle = vehicleText(row);
@@ -3288,19 +3367,16 @@ function buildPattraWatchFlex(report, opts) {
       type: "box", layout: "horizontal", margin: "md", spacing: "sm",
       alignItems: "center",
       contents: [
-        {type: "box", layout: "vertical", width: "76px", height: "24px",
+        {type: "box", layout: "vertical", width: "72px", height: "24px",
           borderWidth: "1.5px", borderColor: t.text, cornerRadius: "6px",
           justifyContent: "center", alignItems: "center", contents: [
             {type: "text", text: displayPlate(row.plate), size: "xxs",
-              weight: "bold", color: t.text, align: "center",
-              adjustMode: "shrink-to-fit"},
+              weight: "bold", color: t.text, adjustMode: "shrink-to-fit"},
           ]},
-        {type: "text", text: vehicle || "ไม่มีข้อมูลรถ", size: "xs",
-          color: vehicle ? t.label : t.muted, flex: 5, wrap: false,
-          adjustMode: "shrink-to-fit"},
-        {type: "text", contents: visitorTimeContents(row), size: "xs",
-          flex: 4, align: "end", gravity: "center", wrap: false,
-          adjustMode: "shrink-to-fit"},
+        // Long names are cut with "…" rather than shrunk.
+        {type: "text", text: vehicle || "ไม่มีข้อมูลรถ", size: "xxs",
+          color: vehicle ? t.label : t.muted, flex: 1, wrap: false},
+        ...visitorTimes(row),
       ],
     };
   };
@@ -3336,54 +3412,44 @@ function buildPattraWatchFlex(report, opts) {
   }] : [];
   const message = {
     type: "flex",
-    altText: night ? `เช้านี้: รถเข้า-ออก ${report.uniqueCars} คัน` :
-      `วันนี้: รถเข้าออก ${report.uniqueCars} คัน`,
+    altText: `${title}: รถผ่านประตู ${report.uniqueCars || 0} คัน`,
     contents: {
       type: "bubble", size: "giga",
       header: {type: "box", layout: "vertical", paddingAll: "18px",
         backgroundColor: t.headBg, contents: [
-          {type: "box", layout: "horizontal", alignItems: "flex-start",
+          {type: "box", layout: "horizontal", alignItems: "center",
             contents: [
-              {type: "box", layout: "vertical", flex: 7, contents: [
-                {type: "text", text: title, size: "lg", weight: "bold",
-                  color: t.title, wrap: true},
-                {type: "box", layout: "vertical", margin: "sm",
-                  backgroundColor: night ? t.heroBg : "#FFF2B8",
-                  cornerRadius: "md", paddingAll: "7px", contents: [
-                    {type: "text", text: dateText, size: "sm",
-                      weight: "bold", color: t.title, wrap: false,
-                      adjustMode: "shrink-to-fit"},
-                    {type: "text", text: `ช่วงเวลา ${windowText} น.`,
-                      size: "xxs", color: t.label, wrap: false,
-                      adjustMode: "shrink-to-fit"},
-                  ]},
-              ]},
+              // One line on narrow phones: shrink slightly instead of
+              // breaking "(กะกลางคืน)" in the middle.
+              {type: "text", text: title, size: "lg", weight: "bold",
+                color: t.title, flex: 7, wrap: false,
+                adjustMode: "shrink-to-fit"},
               {type: "image", url: t.logo, size: "90px", flex: 3,
                 aspectRatio: "928:118", aspectMode: "fit", align: "end"},
             ]},
-        ]},
-      body: {type: "box", layout: "vertical", paddingAll: "18px",
-        backgroundColor: t.bodyBg, contents: [
-          {type: "box", layout: "vertical", backgroundColor: t.heroBg,
-            cornerRadius: "md", paddingAll: "12px", contents: [
-              {type: "text",
-                text: "รถยนต์ผ่านประตูทั้งหมด",
-                size: "sm", weight: "bold", color: t.title, align: "center"},
-              {type: "text", text: `${report.uniqueCars} คัน`, size: "xxl",
-                weight: "bold", color: t.green, align: "center"},
-            ]},
-          {type: "box", layout: "horizontal", spacing: "sm", margin: "lg",
+          // Date and shift window on one line, in a full-width pill so the
+          // longer night window still fits.
+          {type: "box", layout: "vertical", margin: "md",
+            backgroundColor: night ? t.heroBg : "#FFF2B8",
+            cornerRadius: "md", paddingAll: "8px", paddingStart: "10px",
             contents: [
-              stat(report.residentCars, "รถลูกบ้าน", t.green,
-                  io(report.residentEntryCars, report.residentExitCars)),
-              stat(report.externalCars, "รถภายนอก", t.orange,
-                  io(report.externalEntryCars, report.externalExitCars)),
-              stat(report.unreadableDetections, "สแกนไม่พบ", t.red),
+              {type: "text", wrap: false, adjustMode: "shrink-to-fit",
+                contents: [
+                  {type: "span", text: dateText, size: "sm",
+                    weight: "bold", color: t.title},
+                  {type: "span", text: "   ·   ", size: "sm",
+                    color: t.label},
+                  {type: "span", text: windowText, size: "sm",
+                    color: t.label},
+                ]},
             ]},
+        ]},
+      body: {type: "box", layout: "vertical", paddingAll: "20px",
+        backgroundColor: t.bodyBg, contents: [
+          buildSummary(),
           ...cameraWarning,
-          ...(night ? [] : [buildHeatmap()]),
-          {type: "separator", margin: "lg", color: t.line},
-          {type: "box", layout: "horizontal", margin: "lg",
+          {type: "separator", margin: "xl", color: t.line},
+          {type: "box", layout: "horizontal", margin: "xl",
             alignItems: "center", contents: [
               {type: "text", text: "🚗 รถภายนอก (Visitor)", size: "md",
                 weight: "bold", color: t.orange, flex: 4},
@@ -3414,11 +3480,14 @@ function buildPattraWatchFlex(report, opts) {
  * @return {Object}
  */
 function buildDailyTrafficFlexMessage(report) {
-  const completedDay = report.reportDate < getTodayBangkokDate();
+  const startLabel = formatBangkokClock(DAY_SHIFT_START_HOUR);
+  const endLabel = formatBangkokClock(DAY_SHIFT_END_HOUR);
+  const shiftEndEpoch = Date.parse(`${report.reportDate}T${endLabel}:00+07:00`);
+  const completedShift = Date.now() >= shiftEndEpoch;
   return buildPattraWatchFlex(report, {
     variant: "daily",
-    windowText: completedDay ? "07:00–23:59" :
-      report.timeRange || "07:00–ปัจจุบัน",
+    windowText: completedShift ? `${startLabel}–${endLabel}` :
+      report.timeRange || `${startLabel}–ปัจจุบัน`,
   });
 }
 
@@ -3432,7 +3501,8 @@ function buildDailyTrafficFlexMessage(report) {
  */
 async function runDailyTrafficReport(reportDate, sendLine = true,
     targetIdOverride = "", themeName = "") {
-  const report = await buildDailyTrafficReport(reportDate);
+  const report = await buildDailyTrafficReport(
+      reportDate, DAY_SHIFT_START_HOUR, DAY_SHIFT_END_HOUR);
   report.securityOfficerName = await getSecurityShiftOfficerName("day");
   if (themeName) report.themeName = themeName;
   const reportRef = db.collection(LPR_DAILY_TRAFFIC_COLLECTION)
@@ -3480,14 +3550,17 @@ function getTodayBangkokDate() {
 }
 
 /**
- * Builds the epoch range for the overnight window of one Bangkok date.
- * @param {string} reportDate YYYY-MM-DD
+ * Builds the epoch range for the overnight window that ends on one Bangkok
+ * date (the morning the card is sent). A window whose start is later than its
+ * end (e.g. 19:00–07:00) starts on the previous evening.
+ * @param {string} reportDate YYYY-MM-DD, the morning the window ends
  * @param {number} startHour inclusive start hour (default 0)
  * @param {number} startMinute inclusive start minute (default 0)
  * @param {number} endHour exclusive end hour (default 7)
  * @param {number} endMinute exclusive end minute (default 0)
  * @return {{reportDate: string, startHour: number, endHour: number,
- *   startEpoch: number, endEpoch: number}}
+ *   startEpoch: number, endEpoch: number, crossesMidnight: boolean,
+ *   shiftStartDate: string}}
  */
 function getOvernightRange(reportDate, startHour = 0, startMinute = 0,
     endHour = 7, endMinute = 0) {
@@ -3496,9 +3569,14 @@ function getOvernightRange(reportDate, startHour = 0, startMinute = 0,
   const sm = String(startMinute).padStart(2, "0");
   const eh = String(endHour).padStart(2, "0");
   const em = String(endMinute).padStart(2, "0");
-  const startEpoch = Date.parse(`${cleanDate}T${sh}:${sm}:00+07:00`);
+  const crossesMidnight = startHour * 60 + startMinute >
+    endHour * 60 + endMinute;
+  const shiftStartDate = crossesMidnight ?
+    shiftBangkokDate(cleanDate, -1) : cleanDate;
+  const startEpoch = Date.parse(`${shiftStartDate}T${sh}:${sm}:00+07:00`);
   const endEpoch = Date.parse(`${cleanDate}T${eh}:${em}:00+07:00`);
-  return {reportDate: cleanDate, startHour, endHour, startEpoch, endEpoch};
+  return {reportDate: cleanDate, startHour, endHour, startEpoch, endEpoch,
+    crossesMidnight, shiftStartDate};
 }
 
 /**
@@ -3516,7 +3594,7 @@ function formatBangkokHm(epoch) {
 }
 
 /**
- * Builds the overnight (default 00:00–07:30) security report from LPR events.
+ * Builds the overnight (default 19:00–07:00) security report from LPR events.
  * Splits readable detections into resident vs external cars and lists the
  * external plates so the night shift can review who came through.
  * @param {string} reportDate YYYY-MM-DD
@@ -3526,8 +3604,9 @@ function formatBangkokHm(epoch) {
  * @param {number} endMinute
  * @return {Promise<Object>}
  */
-async function buildOvernightSecurityReport(reportDate, startHour = 0,
-    startMinute = 0, endHour = 7, endMinute = 30) {
+async function buildOvernightSecurityReport(reportDate,
+    startHour = NIGHT_SHIFT_START_HOUR, startMinute = 0,
+    endHour = NIGHT_SHIFT_END_HOUR, endMinute = 0) {
   const range = getOvernightRange(
       reportDate, startHour, startMinute, endHour, endMinute);
   const [eventSnap, expected] = await Promise.all([
@@ -3600,6 +3679,18 @@ async function buildOvernightSecurityReport(reportDate, startHour = 0,
       });
   const enrichedExternalPlates = await attachVehicleProfiles(externalPlates);
 
+  const hourlyCounts = Array.from({length: 24}, () => 0);
+  events.forEach((event) => {
+    const hour = Number(new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Bangkok",
+      hour: "2-digit",
+      hourCycle: "h23",
+    }).format(new Date(event.capturedAtEpoch)));
+    if (Number.isInteger(hour)) hourlyCounts[hour]++;
+  });
+  const busiestCount = Math.max(...hourlyCounts, 0);
+  const busiestHour = busiestCount ? hourlyCounts.indexOf(busiestCount) : null;
+
   // Count unique cars per direction (a car seen both ways counts in each).
   let entryCars = 0;
   let exitCars = 0;
@@ -3614,6 +3705,8 @@ async function buildOvernightSecurityReport(reportDate, startHour = 0,
       `${formatBangkokClock(endHour, endMinute)}`,
     startHour: range.startHour,
     endHour: range.endHour,
+    crossesMidnight: range.crossesMidnight,
+    shiftStartDate: range.shiftStartDate,
     generatedAt: new Date().toISOString(),
     totalDetections: events.length,
     entryCars,
@@ -3636,6 +3729,9 @@ async function buildOvernightSecurityReport(reportDate, startHour = 0,
     externalExitCars: enrichedExternalPlates
         .filter((r) => r.directions.includes("exit")).length,
     unreadableDetections: events.length - readableEvents.length,
+    busiestHour,
+    busiestCount,
+    hourlyCounts,
     residentPlates,
     externalPlates: enrichedExternalPlates,
   };
@@ -4980,7 +5076,8 @@ async function buildPaymentHeatmapData(opts) {
  * @return {Promise<Object>}
  */
 async function runOvernightSecurityReport(reportDate, sendLine = true,
-    startHour = 0, startMinute = 0, endHour = 7, endMinute = 30,
+    startHour = NIGHT_SHIFT_START_HOUR, startMinute = 0,
+    endHour = NIGHT_SHIFT_END_HOUR, endMinute = 0,
     targetIdOverride = "") {
   const report = await buildOvernightSecurityReport(
       reportDate, startHour, startMinute, endHour, endMinute);
@@ -9930,12 +10027,12 @@ exports.lineFlexRoutingAdmin = onRequest({
 
       if (flowKey === "night") {
         const report = await runOvernightSecurityReport(
-            getYesterdayBangkokDate(),
+            getTodayBangkokDate(),
             true,
+            NIGHT_SHIFT_START_HOUR,
             0,
+            NIGHT_SHIFT_END_HOUR,
             0,
-            7,
-            30,
             targetId,
         );
         res.status(200).json({
@@ -10592,9 +10689,10 @@ exports.lprEventWebhook = onRequest(
     },
 );
 
+// Day shift card (07:00–19:00), sent 15 minutes after the shift ends.
 exports.dailyTrafficSummary = onSchedule(
     {
-      schedule: "5 0 * * *",
+      schedule: "15 19 * * *",
       timeZone: "Asia/Bangkok",
       secrets: [LINE_CHANNEL_ACCESS_TOKEN],
       memory: "512MiB",
@@ -10602,7 +10700,7 @@ exports.dailyTrafficSummary = onSchedule(
     },
     async () => {
       const report = await runDailyTrafficReport(
-          getYesterdayBangkokDate(),
+          getTodayBangkokDate(),
           !REPORT_PUSH_PAUSED,
       );
       logger.info("dailyTrafficSummary complete", {
@@ -10658,7 +10756,7 @@ exports.dailyTrafficReport = onRequest(
           // sandbox group (e.g. Pattra Watch) instead of the live residents
           // group. Falls back to the configured daily_traffic target.
           const report = await runDailyTrafficReport(
-              body.reportDate || getYesterdayBangkokDate(),
+              body.reportDate || getTodayBangkokDate(),
               body.sendLine !== false,
               String(body.targetId || "").trim(),
               String(body.themeName || "").trim(),
@@ -10757,9 +10855,11 @@ exports.dailyTrafficReport = onRequest(
     },
 );
 
+// Night shift card (19:00 yesterday – 07:00 today), sent 15 minutes after
+// the shift ends. reportDate is the morning the shift ends.
 exports.overnightSecuritySummary = onSchedule(
     {
-      schedule: "30 7 * * *",
+      schedule: "15 7 * * *",
       timeZone: "Asia/Bangkok",
       secrets: [LINE_CHANNEL_ACCESS_TOKEN],
       memory: "512MiB",
@@ -10769,10 +10869,10 @@ exports.overnightSecuritySummary = onSchedule(
       const report = await runOvernightSecurityReport(
           getTodayBangkokDate(),
           !REPORT_PUSH_PAUSED,
+          NIGHT_SHIFT_START_HOUR,
           0,
+          NIGHT_SHIFT_END_HOUR,
           0,
-          7,
-          30,
       );
       logger.info("overnightSecuritySummary complete", {
         reportDate: report.reportDate,
@@ -10865,13 +10965,13 @@ exports.overnightSecurityReport = onRequest(
               body.reportDate || getTodayBangkokDate(),
               body.sendLine !== false,
               Number.isFinite(Number(body.startHour)) ?
-                Number(body.startHour) : 0,
+                Number(body.startHour) : NIGHT_SHIFT_START_HOUR,
               Number.isFinite(Number(body.startMinute)) ?
                 Number(body.startMinute) : 0,
               Number.isFinite(Number(body.endHour)) ?
-                Number(body.endHour) : 7,
+                Number(body.endHour) : NIGHT_SHIFT_END_HOUR,
               Number.isFinite(Number(body.endMinute)) ?
-                Number(body.endMinute) : 30,
+                Number(body.endMinute) : 0,
           );
           res.status(200).json({ok: true, report});
           return;
@@ -10986,12 +11086,15 @@ exports.lprWatchRun = onRequest(
         }
         let report;
         if (type === "night") {
+          const hourParam = (value, fallback) =>
+            Number.isFinite(Number(value)) && value !== "" ?
+              Number(value) : fallback;
           report = await runOvernightSecurityReport(
               date, sendLine,
-              Number(params.startHour || 0),
-              Number(params.startMinute || 0),
-              Number(params.endHour || 7),
-              Number(params.endMinute || 30),
+              hourParam(params.startHour, NIGHT_SHIFT_START_HOUR),
+              hourParam(params.startMinute, 0),
+              hourParam(params.endHour, NIGHT_SHIFT_END_HOUR),
+              hourParam(params.endMinute, 0),
               targetIdOverride,
           );
         } else {
@@ -11715,9 +11818,9 @@ async function runSystemHealthProbe() {
         probe.ok === true, saved.consecutiveFailures,
     );
     const eventStatus = saved.eventStatus || "unknown";
-    const status = physicalStatus === "online" &&
-      (eventStatus === "warning" || eventStatus === "offline") ?
-      eventStatus : physicalStatus;
+    // Traffic in the other lane cannot prove that this lane missed a car.
+    // Keep device availability separate from uncertain ANPR freshness.
+    const status = physicalStatus;
     cameras[probe.cameraId] = {
       cameraId: probe.cameraId,
       ok: probe.ok === true,
@@ -11814,10 +11917,14 @@ async function buildSystemHealthSummary() {
     const requestedEpoch = systemHealthEpoch(reboot.requestedEpoch);
     const rebootRecent = reboot.status === "rebooting" &&
       requestedEpoch > now - 5 * 60 * 1000;
+    // Normalize cached probes too: old freshness warnings are not evidence
+    // that the device API or live image has failed.
+    const deviceStatus = typeof camera.ok === "boolean" ?
+      probeStatus(camera.ok, camera.consecutiveFailures) : "unknown";
     return {
       cameraId,
       label: cameraLabels[cameraId],
-      status: rebootRecent ? "rebooting" : camera.status || "unknown",
+      status: rebootRecent ? "rebooting" : deviceStatus,
       apiOk: camera.apiOk === true,
       snapshotOk: camera.snapshotOk === true,
       snapshotBytes: Number(camera.snapshotBytes || 0),
@@ -14682,6 +14789,7 @@ const PP_ADMIN_NOTIFICATION_EMAIL = "mrteam388@gmail.com";
 const {
   periodLabel: ppPeriodLabel,
   renderReceiptHtml: ppReceiptHtml,
+  prepareReceiptEmailHtml: ppPrepareReceiptEmailHtml,
 } = require("./domains/payments/receipt-template");
 
 async function ppSendEmail(to, subject, html) {
@@ -14691,7 +14799,10 @@ async function ppSendEmail(to, subject, html) {
     const r = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {Authorization: `Bearer ${key}`, "Content-Type": "application/json"},
-      body: JSON.stringify({from: PP_FROM, to: [to], subject, html}),
+      body: JSON.stringify({
+        from: PP_FROM, to: [to], subject,
+        html: ppPrepareReceiptEmailHtml(html),
+      }),
     });
     if (!r.ok) {
       const t = await r.text().catch(() => "");
@@ -17275,6 +17386,13 @@ exports.estateIssueCleanup = onSchedule(
 // Recovery/session tests inject an in-memory store; no production I/O.
 // ===========================================================================
 module.exports.__visitorTest = {
+  getTrafficDayRange,
+  getOvernightRange,
+  buildPattraWatchFlex,
+  buildDailyTrafficReport,
+  buildOvernightSecurityReport,
+  buildDailyTrafficFlexMessage,
+  buildOvernightSecurityFlexMessage,
   recoverVisitorIntakeOcr,
   resolveVisitorIntakeLogId,
   getCarQuota,
