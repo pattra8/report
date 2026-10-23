@@ -49,12 +49,7 @@
     .identity-pill {
       display:flex; align-items:center; gap:8px; cursor:pointer;
       background:#f7e6cd; border:1px solid #d4913f; border-radius:99px;
-      padding:4px 14px 4px 6px; white-space:nowrap;
-    }
-    .pill-avatar {
-      width:28px; height:28px; border-radius:50%; flex-shrink:0;
-      background:var(--accent); color:#fff; display:flex; align-items:center;
-      justify-content:center; font-size:.8rem; font-weight:800;
+      padding:6px 14px; white-space:nowrap;
     }
     .pill-house { font-size:.8rem; font-weight:700; color:var(--text); line-height:1.2; }
     .pill-name { font-size:.72rem; color:var(--text-muted); line-height:1.2; }
@@ -291,14 +286,91 @@
     .saved-media-item { position:relative; }
     .saved-media-item .media-thumb { cursor:default; }
     .saved-media-item .rm { position:absolute; top:4px; right:4px; border:0; border-radius:50%; width:24px; height:24px; color:#fff; background:rgba(0,0,0,.72); cursor:pointer; }
-    .replies { margin-top:14px; display:flex; flex-direction:column; gap:9px; }
-    .reply { border-radius:12px; padding:11px 13px; font-size:13.5px; line-height:1.7; }
-    .reply.admin { background:var(--warn-bg); }
-    .reply.resident { background:var(--bg-soft); }
-    .reply-head { font-size:11.5px; font-weight:700; color:var(--text-soft); margin-bottom:4px; display:flex; justify-content:space-between; gap:8px; }
-    .reply-body { white-space:pre-wrap; color:var(--text-body); }
+    /* ── จดหมายถึงกัน ──
+       A report reads as a short letter thread: who wrote it, when, and the
+       words at full width, separated by a thin rule — never a chat bubble.
+       Status lives as a chip in the header, and the one thing we durably know
+       changed (the close) is a quiet line in the flow, not a button. */
+    .lt-chip { margin-top:11px; }
+    .letters { display:flex; flex-direction:column; }
+    .lt { display:flex; gap:11px; padding:16px 0; }
+    .lt:first-child { padding-top:6px; }
+    .lt + .lt, .lt + .lt-event, .lt-event + .lt { border-top:1px solid var(--border-soft); }
+    .lt-av {
+      width:32px; height:32px; border-radius:50%; flex:0 0 auto;
+      display:flex; align-items:center; justify-content:center;
+      font:700 13px/1 inherit; background:var(--accent); color:#fff;
+    }
+    .lt-av.anon { background:#ece7f6; color:#5b4a8a; font-size:15px; }
+    .lt-av.res { background:var(--ok-bg); color:var(--ok); }
+    .lt-body { flex:1; min-width:0; }
+    .lt-who { font-size:12.5px; font-weight:600; color:var(--text); }
+    .lt-when {
+      margin-left:7px; font-weight:400; font-size:11px; color:var(--text-muted);
+      font-family:'IBM Plex Mono', monospace;
+    }
+    .lt-text {
+      margin-top:4px; font-size:14px; line-height:1.85; color:var(--text-body);
+      white-space:pre-wrap;
+    }
+    .lt-text .t-meta { white-space:normal; margin-top:8px; display:block; }
+    .lt-text .media-row.detail-gallery {
+      grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:8px; margin-top:10px;
+    }
+    /* A photo is evidence, not the whole letter — it stays inside the message
+       instead of pushing everything below the fold. */
+    .lt-text .detail-gallery .media-thumb {
+      border-radius:11px; aspect-ratio:16/10; max-height:180px;
+    }
+    .lt-event {
+      display:flex; align-items:center; gap:9px; padding:13px 0 13px 43px;
+      font-size:11.5px; line-height:1.6; color:var(--text-muted);
+    }
+    .lt-event::before {
+      content:''; flex:0 0 auto; width:7px; height:7px; border-radius:50%;
+      border:2px solid #c9b795;
+    }
+    .lt-wait {
+      margin:14px 0 2px; border:1px dashed #d8c8aa; border-radius:13px;
+      padding:11px 13px; font-size:12.5px; line-height:1.7;
+      color:var(--text-muted); background:var(--card);
+    }
+    /* The foot holds one clear next move; the composer unfolds out of it. */
+    .tl-danger {
+      margin-top:22px; padding-top:16px; border-top:1px solid var(--border-soft);
+      display:flex; justify-content:center;
+    }
+    .tl-danger button {
+      border:1px solid #e8c6bb; border-radius:10px; background:transparent;
+      color:#86341e; cursor:pointer; padding:8px 16px; font:500 12.5px/1.5 inherit;
+    }
+    .tl-danger button:hover { background:var(--err-bg); }
+    /* The foot is a capsule you write into, with the one status move above it
+       — not two buttons of equal weight arguing about what happens next. */
+    .tl-actions { display:flex; gap:9px; align-items:center; margin-bottom:10px; }
+    .tl-actions .btn { padding:8px 14px; border-radius:99px; }
+    .lt-compose {
+      display:flex; align-items:center; gap:10px; width:100%; cursor:pointer;
+      background:var(--bg-soft); border:1px solid var(--border); border-radius:99px;
+      padding:7px 8px 7px 16px; text-align:left;
+      font:400 13.5px/1.6 inherit; color:var(--text-muted);
+    }
+    .lt-compose:hover { border-color:var(--accent); }
+    .lt-compose span { flex:1; min-width:0; }
+    .lt-compose i {
+      flex:0 0 auto; width:34px; height:34px; border-radius:50%; font-style:normal;
+      display:flex; align-items:center; justify-content:center;
+      background:var(--accent); color:#fff; font-size:15px;
+      box-shadow:0 2px 8px rgba(196,122,44,.35);
+    }
+    .reply-send { display:flex; flex-direction:column; align-items:center; gap:5px; flex:0 0 auto; }
+    .reply-send .linkish { font-size:11.5px; }
+    .tl-foot .reply-box { display:none; }
+    .tl-foot.composing .reply-box { display:flex; }
+    .tl-foot.composing .tl-actions,
+    .tl-foot.composing .lt-compose { display:none; }
     .reply-box { display:flex; gap:8px; margin-top:12px; align-items:flex-start; }
-    .reply-box textarea { min-height:52px; font-size:14px; }
+    .reply-box textarea { min-height:140px; font-size:15px; line-height:1.7; padding:12px 14px; }
     .mine-summary { display:flex; gap:7px; margin:17px 0 11px; overflow-x:auto; }
     .inbox-alert {
       display:flex; align-items:center; gap:11px; width:100%; margin:17px 0 12px;
@@ -325,7 +397,7 @@
     }
     .issue-detail .t-title { font-size:20px; line-height:1.5; }
     .issue-detail .thread-detail { margin-top:18px; padding-top:18px; }
-    .issue-detail .detail-text { font-size:15px; line-height:1.8; }
+    .issue-detail .lt-text { font-size:14.5px; line-height:1.85; }
     .resident-ticket.edit-view {
       border:1px solid var(--border); border-radius:18px; padding:24px;
       background:var(--card); box-shadow:0 6px 22px rgba(60,40,20,.07);
@@ -387,8 +459,6 @@
     .queue-state.waiting::before { background:#4a819d; }
     .queue-state.done { color:#4d7c3f; }
     .queue-state.done::before { background:#5d914d; }
-    .workflow-actions { display:flex; gap:8px; margin-bottom:10px; }
-    .workflow-actions .btn { flex:1; min-height:42px; }
     .btn.done-action { background:#4d7c3f; }
     .pager {
       display:flex; align-items:center; justify-content:center; gap:14px;
@@ -432,7 +502,6 @@
       font-size:11.5px; color:var(--text-muted); line-height:1.4;
       display:flex; gap:6px; align-items:center; flex-wrap:wrap;
     }
-    .tk-sub .code { font-family:ui-monospace,'SF Mono',Menlo,monospace; font-weight:600; color:var(--accent-text); }
     .tk-st {
       flex:0 0 auto; border-radius:99px; padding:3px 11px;
       font-size:11px; font-weight:600; white-space:nowrap;
@@ -486,13 +555,9 @@
     }
     .sheet-close:hover { border-color:var(--accent); color:var(--accent-text); }
     .sheet-body { flex:1; min-height:0; overflow-y:auto; padding:16px 18px 22px; }
-    .sheet-body .thread-detail { border-top:0; margin-top:0; padding-top:0; }
     .sheet-tags { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
-    /* Sided bubbles, admin-side only. The resident's own view inverts "us" and
-       "them", so this alignment stays scoped to the committee sheet. */
-    #issueSheetBody .reply { max-width:86%; }
-    #issueSheetBody .reply.admin { margin-left:auto; }
-    #issueSheetBody .reply.resident { background:var(--card); border:1px solid var(--border); }
+    .sheet-head .lt-chip { margin-top:12px; }
+    .sheet-body .letters { padding-bottom:4px; }
     .sheet-foot {
       flex:0 0 auto; padding:12px 18px 15px;
       border-top:1px solid var(--border); background:var(--bg-soft);
@@ -568,8 +633,7 @@
       .brand-mark { font-size:19px; letter-spacing:.08em; white-space:nowrap; }
       .brand-sub { font-size:9px; letter-spacing:.12em; }
       .btn.small { font-size:12.5px; padding:8px 11px; }
-      .identity-pill { padding:3px 11px 3px 4px; }
-      .pill-avatar { width:25px; height:25px; font-size:.72rem; }
+      .identity-pill { padding:5px 11px; }
       .pill-house { font-size:.74rem; }
       .pill-name { font-size:.66rem; }
       .t-top { gap:6px; }
@@ -588,10 +652,14 @@
       .sheet-body { padding:14px 14px 18px; }
       .sheet-foot { padding:10px 14px calc(12px + env(safe-area-inset-bottom)); }
       .sheet-foot .reply-box { align-items:stretch; }
-      .sheet-foot textarea { min-height:44px; max-height:110px; }
+      .sheet-foot textarea { min-height:120px; max-height:200px; }
       .sheet-foot .btn { min-width:58px; min-height:44px; }
     }
   </style>
+  <link rel="stylesheet" href="/assets/resident-badge.css" />
+  <script src="/assets/resident-badge.js" defer></script>
+  <link rel="stylesheet" href="/assets/resident-auth.css">
+  <script src="/assets/resident-auth.js" defer></script>
 </head>
 <body>
   <header class="site-header">
@@ -798,7 +866,7 @@
   }
   function residentStatusLabel(status, category) {
     if (status === 'new') return 'ส่งถึงกรรมการแล้ว';
-    if (status === 'in_progress') return 'กำลังดูแล';
+    if (status === 'in_progress') return 'กำลังดำเนินการ';
     return category === 'suggestion' || category === 'feedback' ?
       'รับทราบแล้ว' : 'ดำเนินการแล้ว';
   }
@@ -819,11 +887,22 @@
   var mode = 'resident';
   var pendingSubmitAfterLogin = false;
 
+  // The shared pattra8.com session carries a fixed 30-day stamp that used to
+  // never move, so a resident who signs in once and keeps using the site was
+  // still dropped on day 30 — and the drop only showed up here, because the
+  // landing page kept painting its old header from the back/forward cache.
+  // Slide the window whenever the session is read from an active page.
+  function renewSession(s) {
+    if (Number(s.expiresAt) - Date.now() > TTL / 2) return s;
+    s.expiresAt = Date.now() + TTL;
+    try { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch (e) { /* private mode */ }
+    return s;
+  }
   function getSession() {
     try {
       var s = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
-      if (!s || Number(s.expiresAt) <= Date.now()) return null;
-      return s;
+      if (!s || !s.houseNo || !s.pin || Number(s.expiresAt) <= Date.now()) return null;
+      return renewSession(s);
     } catch (e) { return null; }
   }
   function storeSession(houseNo, pin, name) {
@@ -838,7 +917,21 @@
     localStorage.removeItem('pattra_admin_access_v1');
     session = null; canAdmin = false;
   }
+  // Shared account menu — see /assets/resident-badge.js. The markup below is
+  // the fallback for a failed asset load.
+  var badgeMounted = false;
+  function mountResidentBadge() {
+    if (!window.PattraBadge) return false;
+    window.PattraBadge.mount('#headerIdentity', {
+      onLogin: function () { showLogin(); },
+      onLogout: function () { clearSession(); showGuestForm(); }
+    });
+    badgeMounted = true;
+    return true;
+  }
+
   function renderIdentity() {
+    if (badgeMounted) { window.PattraBadge.refresh(); return; }
     var box = $('headerIdentity');
     if (!session) {
       box.innerHTML = '<button class="btn ghost small" id="loginShortcut" type="button">เรื่องของฉัน</button>';
@@ -846,10 +939,9 @@
       return;
     }
     var name = session.residentName || '';
-    var initial = ((name || session.houseNo || '').match(/[\dA-Za-z฀-๿]/) || ['P'])[0];
     var houseQuery = encodeURIComponent(session.houseNo);
     box.innerHTML = '<details class="profile-menu"><summary class="identity-pill" title="เปิดเมนูบัญชี" aria-label="เปิดเมนูบัญชี">' +
-      '<div class="pill-avatar">' + esc(initial.toUpperCase()) + '</div><div>' +
+      '<div>' +
       '<div class="pill-house">บ้าน ' + esc(session.houseNo) + '</div>' +
       '<div class="pill-name">' + esc(name || 'ลูกบ้าน') + '</div></div>' +
       '<span class="pill-chevron" aria-hidden="true">▼</span></summary>' +
@@ -873,7 +965,11 @@
       body: JSON.stringify(payload)
     }).then(function (res) {
       return res.json().catch(function () { return {}; }).then(function (data) {
-        if ((res.status === 401 || res.status === 403) && !keepSession) {
+        // Only a rejected credential (401) invalidates the session. A 403 means
+        // "this account may not do *this*" — usually a committee-only action —
+        // and wiping the shared pattra8.com session there logged the resident
+        // out of every tool on the site.
+        if (res.status === 401 && !keepSession) {
           clearSession(); renderIdentity(); showLogin('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
           throw new Error(data.error || 'กรุณาเข้าสู่ระบบใหม่');
         }
@@ -891,13 +987,34 @@
   }
 
   /* ── login ───────────────────────────────────────────────────────── */
+  // One login surface for the whole site. The guest form stays on screen
+  // underneath: a resident who backs out of the sheet can still send a report
+  // without signing in. The overlay below is the fallback for a visit where
+  // /assets/resident-auth.js did not load.
   function showLogin(message) {
     $('bootState').hidden = true;
     if (!session) showGuestForm();
-    $('loginOverlay').classList.add('open');
     canAdmin = false;
-    if (message) { $('loginErr').textContent = message; $('loginErr').classList.add('show'); }
-    setTimeout(function () { $('loginSuffix').focus(); }, 80);
+    if (!window.PattraAuth) {
+      $('loginOverlay').classList.add('open');
+      if (message) { $('loginErr').textContent = message; $('loginErr').classList.add('show'); }
+      setTimeout(function () { $('loginSuffix').focus(); }, 80);
+      return;
+    }
+    window.PattraAuth.require({
+      service: 'เรื่องของฉัน',
+      reason: message || 'ดูและติดตามเรื่องที่บ้านคุณแจ้งไว้ ต้องยืนยันเลขบ้านกับ PIN ก่อน'
+    }).then(function (result) {
+      if (!result) { pendingSubmitAfterLogin = false; return; }
+      var shouldSubmit = pendingSubmitAfterLogin;
+      pendingSubmitAfterLogin = false;
+      session = getSession();
+      hideLogin(); renderIdentity(); boot();
+      if (shouldSubmit) {
+        showReportForm(false);
+        setTimeout(submitReport, 0);
+      }
+    });
   }
   function hideLogin() {
     $('loginOverlay').classList.remove('open');
@@ -1212,14 +1329,145 @@
       alert(err.message); button.disabled = false; button.textContent = 'บันทึกการแก้ไข';
     });
   }
-  function repliesHtml(replies) {
-    if (!replies || !replies.length) return '';
-    return '<div class="replies">' + replies.map(function (r) {
-      return '<div class="reply ' + esc(r.author) + '">' +
-        '<div class="reply-head"><span>' + esc(r.authorLabel) + '</span>' +
-        '<span>' + esc(fmtDate(r.createdAt)) + '</span></div>' +
-        '<div class="reply-body">' + esc(r.message) + '</div></div>';
-    }).join('') + '</div>';
+  /* ── timeline ────────────────────────────────────────────────────── */
+  // A report is read as a sequence, so it is drawn as one. Every node comes
+  // from something durable — the report, a stored reply, resolvedAt — and the
+  // open node at the end says what is being waited for. Nothing here invents
+  // an event the backend does not keep.
+  function issueIsDone(issue) {
+    return issue.status === 'resolved' || issue.status === 'closed';
+  }
+  function msOf(value) {
+    if (!value) return 0;
+    var ms = typeof value === 'number' ? value :
+      (value && value._seconds ? value._seconds * 1000 : Date.parse(value));
+    return isNaN(ms) ? 0 : ms;
+  }
+  // Status is one chip in the header — the same sentence in the same place on
+  // both sides, instead of a row of buttons competing to say it.
+  function statusChipHtml(issue, forAdmin) {
+    var label;
+    if (forAdmin) {
+      label = issueIsDone(issue) ? 'ปิดเรื่องแล้ว' :
+        (issue.status === 'in_progress' || (issue.replies || []).length ?
+          'กำลังดำเนินการ' : 'ยังไม่ได้รับเรื่อง');
+    } else {
+      label = issue.statusLabel || residentStatusLabel(issue.status, issue.category);
+    }
+    return '<div class="t-top lt-chip">' +
+      '<span class="pill st-' + esc(issue.status) + '">' + esc(label) + '</span>' +
+    '</div>';
+  }
+  // Who signed a letter. The committee never signs with a personal name — one
+  // reply is the committee replying, not a particular member.
+  function letterSigner(issue, author, forAdmin) {
+    if (author === 'admin') return {cls: '', av: 'ก', name: 'กรรมการ'};
+    if (!forAdmin) return {cls: ' res', av: 'ค', name: 'คุณ'};
+    if (issue.anonymous) return {cls: ' anon', av: '🙈', name: 'ไม่ประสงค์ออกนาม'};
+    return {
+      cls: ' res', av: String(issue.houseNo || '').split('/').pop() || '?',
+      name: 'บ้าน ' + String(issue.houseNo || '')
+    };
+  }
+  function letterHtml(issue, author, when, bodyHtml, forAdmin) {
+    var who = letterSigner(issue, author, forAdmin);
+    return '<div class="lt">' +
+      '<div class="lt-av' + who.cls + '">' + esc(who.av) + '</div>' +
+      '<div class="lt-body">' +
+        '<div class="lt-who">' + esc(who.name) +
+          '<span class="lt-when">' + esc(fmtDate(when)) + '</span></div>' +
+        '<div class="lt-text">' + bodyHtml + '</div>' +
+      '</div>' +
+    '</div>';
+  }
+  // The open end of the thread: for the committee a nudge carrying the real
+  // gap in days, for the resident a plain statement of who holds the ball.
+  function waitingHtml(issue, forAdmin) {
+    var replies = issue.replies || [];
+    var lastMs = replies.length ?
+      msOf(replies[replies.length - 1].createdAt) : msOf(issue.createdAt);
+    var days = lastMs ? Math.floor((Date.now() - lastMs) / 86400000) : 0;
+    var note;
+    if (forAdmin) {
+      note = days >= 1 ?
+        'เงียบมา ' + days + ' วันแล้ว — อัปเดตให้ผู้แจ้งรู้สักหน่อยไหม' :
+        'ตอบผู้แจ้งได้จากช่องข้างล่าง';
+    } else {
+      note = 'กรรมการจะตอบกลับในหน้านี้ และคุณจะเห็นแจ้งเตือนเมื่อมีคำตอบใหม่';
+    }
+    return '<div class="lt-wait">' + esc(note) + '</div>';
+  }
+  function lettersHtml(issue, forAdmin) {
+    var parts = [letterHtml(issue, 'resident', issue.createdAt,
+      esc(issue.detail) +
+      (forAdmin && issue.contact ?
+        '<span class="t-meta">ติดต่อกลับ: ' + esc(issue.contact) + '</span>' : '') +
+      mediaHtml(issue.attachments, true), forAdmin)];
+
+    (issue.replies || []).forEach(function (reply) {
+      parts.push(letterHtml(issue, reply.author === 'admin' ? 'admin' : 'resident',
+        reply.createdAt, esc(reply.message), forAdmin));
+    });
+
+    if (issueIsDone(issue)) {
+      var closed = forAdmin ? 'ปิดเรื่องแล้ว' :
+        residentStatusLabel(issue.status, issue.category);
+      var at = fmtDate(issue.resolvedAt);
+      parts.push('<div class="lt-event">' + esc(closed + (at ? ' · ' + at : '')) + '</div>');
+    } else {
+      parts.push(waitingHtml(issue, forAdmin));
+    }
+    return '<div class="letters">' + parts.join('') + '</div>';
+  }
+  // One primary move, with the composer folded inside it. Two buttons of equal
+  // weight is what made the old foot read like a ticket queue.
+  function composerFootHtml(issue, forAdmin) {
+    var id = esc(issue.id);
+    var done = issueIsDone(issue);
+    var sendAttr = forAdmin ? 'data-areply="' + id + '"' : 'data-reply="' + id + '"';
+    var openLabel = forAdmin ? 'เขียนถึงผู้แจ้ง…' : 'เขียนถึงกรรมการ…';
+    var side = '';
+    if (forAdmin) {
+      side = done ?
+        '<button class="btn ghost small" type="button" data-astatus="in_progress" data-issue="' +
+          id + '">เปิดเรื่องอีกครั้ง</button>' :
+        '<button class="btn small done-action" type="button" data-astatus="resolved" data-issue="' +
+          id + '">✓ เสร็จแล้ว</button>';
+    }
+    return '<div class="tl-foot" data-stop="1">' +
+      (side ? '<div class="tl-actions">' + side + '</div>' : '') +
+      '<button class="lt-compose" type="button" data-compose>' +
+        '<span>' + openLabel + '</span><i>↑</i></button>' +
+      '<div class="reply-box">' +
+        '<textarea id="' + (forAdmin ? 'adminReplyInput' : 'replyInput') +
+          '" placeholder="' + (forAdmin ? 'เขียนถึงผู้แจ้ง…' : 'เขียนถึงกรรมการ…') + '"></textarea>' +
+        '<div class="reply-send">' +
+          '<button class="btn small" type="button" ' + sendAttr + '>ส่ง</button>' +
+          '<button class="linkish" type="button" data-compose-cancel>ยกเลิก</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+  // Delegated from both views: the composer is the same fold either side.
+  function composeClick(e) {
+    var cancel = e.target.closest('[data-compose-cancel]');
+    if (cancel) {
+      var box = cancel.closest('.tl-foot');
+      if (box) {
+        var text = box.querySelector('textarea');
+        if (text) text.value = '';
+        box.classList.remove('composing');
+      }
+      return true;
+    }
+    var open = e.target.closest('[data-compose]');
+    if (!open) return false;
+    var foot = open.closest('.tl-foot');
+    if (!foot) return false;
+    foot.classList.add('composing');
+    var field = foot.querySelector('textarea');
+    if (field) field.focus();
+    return true;
   }
   function renderMine() {
     var unreadIssues = myIssues.filter(function (i) { return i.hasUnreadReply; });
@@ -1250,7 +1498,7 @@
       '<button class="summary-chip' + (mineFilter === 'all' ? ' on' : '') +
         '" type="button" data-mine-filter="all">ทั้งหมด ' + myIssues.length + '</button>' +
       '<button class="summary-chip' + (mineFilter === 'active' ? ' on' : '') +
-        '" type="button" data-mine-filter="active">กำลังดูแล ' + activeCount + '</button>' +
+        '" type="button" data-mine-filter="active">กำลังดำเนินการ ' + activeCount + '</button>' +
       '<button class="summary-chip' + (mineFilter === 'done' ? ' on' : '') +
         '" type="button" data-mine-filter="done">สิ้นสุดแล้ว ' + doneCount + '</button>';
     if (!myIssues.length) {
@@ -1281,9 +1529,11 @@
       '</div>' : '') +
       issuesToRender.map(function (issue) {
       var open = issue.id === openIssueId;
+      // The open thread shows its status chip under the title (statusChipHtml),
+      // so the header keeps only priority and the unread flag there.
       var pills = '<div class="t-top">' +
-        '<span class="pill st-' + esc(issue.status) + '">' +
-          esc(issue.statusLabel || residentStatusLabel(issue.status, issue.category)) + '</span>' +
+        (open ? '' : '<span class="pill st-' + esc(issue.status) + '">' +
+          esc(issue.statusLabel || residentStatusLabel(issue.status, issue.category)) + '</span>') +
         (issue.priority !== 'normal' ?
           '<span class="pill pri-' + esc(issue.priority) + '">' + esc(issue.priorityLabel) + '</span>' : '') +
         (issue.hasUnreadReply ? '<span class="pill unread">ตอบกลับใหม่</span>' : '') +
@@ -1316,14 +1566,10 @@
       }
       return '<article class="ticket resident-ticket issue-detail st-' + esc(issue.status) + '">' +
         head +
+        statusChipHtml(issue, false) +
         '<div class="thread-detail">' +
-          '<div class="detail-text">' + esc(issue.detail) + '</div>' +
-          mediaHtml(issue.attachments, true) +
-          repliesHtml(issue.replies) +
-          '<div class="reply-box" data-stop="1">' +
-            '<textarea id="replyInput" placeholder="พิมพ์ข้อความเพิ่มเติมถึงนิติฯ"></textarea>' +
-            '<button class="btn small" type="button" data-reply="' + esc(issue.id) + '">ส่ง</button>' +
-          '</div>' +
+          lettersHtml(issue, false) +
+          composerFootHtml(issue, false) +
         '</div></article>';
     }).join('');
   }
@@ -1390,8 +1636,8 @@
       '<div class="tk-who-tx">' +
         '<div class="tk-name">' +
           (anon ? 'ไม่ประสงค์ออกนาม' : 'บ้าน ' + esc(issue.houseNo)) + '</div>' +
-        '<div class="tk-sub"><span class="code">' + esc(issue.code) + '</span>' +
-          '<span>· ' + esc(absolute ? fmtDate(issue.createdAt) : fmtAgo(issue.createdAt)) +
+        '<div class="tk-sub"><span>' +
+          esc(absolute ? fmtDate(issue.createdAt) : fmtAgo(issue.createdAt)) +
           '</span></div>' +
       '</div>' +
     '</div>';
@@ -1469,7 +1715,8 @@
     if (!issue) { closeIssueSheet(); return; }
 
     $('issueSheetHead').innerHTML = adminCardHead(issue, true) +
-      '<div class="tk-title">' + esc(issue.title) + '</div>';
+      '<div class="tk-title">' + esc(issue.title) + '</div>' +
+      statusChipHtml(issue, true);
 
     var images = issue.attachments.length;
     $('issueSheetBody').innerHTML =
@@ -1477,29 +1724,21 @@
         '<span class="tk-tag">' + esc(issue.categoryLabel) + '</span>' +
         (images ? '<span class="tk-att">📎 ' + images + '</span>' : '') +
       '</div>' +
-        '<div class="thread-detail">' +
-          '<div class="detail-text">' + esc(issue.detail) + '</div>' +
-          (issue.contact ? '<div class="t-meta">ติดต่อกลับ: ' + esc(issue.contact) + '</div>' : '') +
-          mediaHtml(issue.attachments, true) +
-          repliesHtml(issue.replies) +
-        '</div>';
+      lettersHtml(issue, true) +
+      '<div class="tl-danger" data-stop="1">' +
+        '<button type="button" data-adelete="' + esc(issue.id) + '">ลบเรื่องนี้ถาวร</button>' +
+      '</div>';
 
     // Internal notes are gone on purpose: two textareas that differed only by
     // placeholder were one mis-click away from publishing a private note to the
     // resident. Stored notes stay in Firestore; adminNote still exists on the
     // server. The four-state workflow is gone too — nobody had time to keep it
     // truthful, and a stale status is worse than none.
-    $('issueSheetFoot').innerHTML =
-      '<div class="workflow-actions" data-stop="1">' +
-        '<button class="btn ghost small" type="button" data-astatus="in_progress" data-issue="' +
-          esc(issue.id) + '">กำลังดำเนินการ</button>' +
-        '<button class="btn small done-action" type="button" data-astatus="resolved" data-issue="' +
-          esc(issue.id) + '">ปิดเรื่อง</button>' +
-      '</div>' +
-      '<div class="reply-box" data-stop="1">' +
-        '<textarea id="adminReplyInput" placeholder="พิมพ์ตอบผู้แจ้ง…"></textarea>' +
-        '<button class="btn small" type="button" data-areply="' + esc(issue.id) + '">ตอบ</button>' +
-      '</div>';
+    //
+    // "กำลังดำเนินการ" is gone from the foot as well: adminReply already moves a
+    // needs_action report to in_progress, so replying is the only way that step
+    // was ever reached honestly. What is left is the next move and the close.
+    $('issueSheetFoot').innerHTML = composerFootHtml(issue, true);
   }
 
   function openIssueSheet(id) {
@@ -1672,6 +1911,7 @@
           .then(function () { send.disabled = false; });
         return;
       }
+      if (composeClick(e)) return;
       if (e.target.closest('[data-media-url]')) return;
       if (e.target.closest('[data-stop]')) return;
       var card = e.target.closest('[data-open]');
@@ -1714,7 +1954,11 @@
     });
     $('mediaClose').addEventListener('click', closeMedia);
     $('mediaOverlay').addEventListener('click', function (e) {
-      if (e.target === $('mediaOverlay')) closeMedia();
+      // Everything except the picture itself is "outside": the centring box
+      // fills most of the screen, so testing for the overlay alone left the
+      // viewer tapping a dead zone and wondering why nothing closed.
+      if (e.target.closest('#mediaStage img, #mediaStage video')) return;
+      closeMedia();
     });
     document.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape') return;
@@ -1779,6 +2023,27 @@
         });
         return;
       }
+      var del = e.target.closest('[data-adelete]');
+      if (del) {
+        var issueId = del.getAttribute('data-adelete');
+        var subject = '';
+        for (var d = 0; d < adminIssues.length; d++) {
+          if (adminIssues[d].id === issueId) { subject = adminIssues[d].title; break; }
+        }
+        if (!confirm('ลบ “' + subject + '” ถาวรใช่ไหม\n\n' +
+          'ข้อความ รูปแนบ และบทสนทนาทั้งหมดจะหายไป กู้คืนไม่ได้ ' +
+          'และผู้แจ้งจะไม่เห็นเรื่องนี้อีก')) return;
+        del.disabled = true;
+        api('adminDelete', { issueId: issueId }).then(function () {
+          closeIssueSheet();
+          return loadAdmin();
+        }).catch(function (err) {
+          alert(err.message);
+          del.disabled = false;
+        });
+        return;
+      }
+      if (composeClick(e)) return;
       if (e.target.closest('[data-media-url]')) return;
       if (e.target.closest('[data-stop]')) return;
       var card = e.target.closest('[data-aopen]');
@@ -1847,7 +2112,30 @@
     });
   }
 
+  // The whole site shares one session, and mobile browsers restore this page
+  // from the back/forward cache without re-running boot(). Re-read storage on
+  // every restore (and when another tab signs in or out) so this page never
+  // asks for a PIN the resident has already given elsewhere.
+  function syncSessionFromStorage() {
+    var next = getSession();
+    var sameHouse = !!next && !!session && next.houseNo === session.houseNo;
+    if (sameHouse || (!next && !session)) { session = next; return; }
+    session = next;
+    renderIdentity();
+    if (session) { hideLogin(); boot(); } else { showGuestForm(); }
+  }
+  window.addEventListener('pageshow', function (event) {
+    if (event.persisted) syncSessionFromStorage();
+  });
+  window.addEventListener('storage', function (event) {
+    if (event.key === SESSION_KEY) syncSessionFromStorage();
+  });
+
   bindEvents();
+  // The shared badge is a deferred script, so it is only defined once the
+  // document has finished parsing — mount it then and let it repaint over the
+  // fallback header this page has already drawn.
+  document.addEventListener('DOMContentLoaded', function () { mountResidentBadge(); });
   document.addEventListener('click', function (event) {
     document.querySelectorAll('.profile-menu[open]').forEach(function (menu) {
       if (!menu.contains(event.target)) menu.open = false;

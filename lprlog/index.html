@@ -4,6 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LPR Log รายวัน · Pattra Villa 8</title>
+  <link rel="stylesheet" href="/assets/resident-badge.css" />
+  <script src="/assets/resident-badge.js" defer></script>
+  <link rel="stylesheet" href="/assets/resident-auth.css" />
+  <script src="/assets/resident-auth.js" defer></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet" />
@@ -44,15 +48,19 @@
     .identity-pill {
       display:flex; align-items:center; gap:8px; cursor:pointer;
       background:#f7e6cd; border:1px solid #d4913f; border-radius:99px;
-      padding:4px 14px 4px 6px; white-space:nowrap;
-    }
-    .pill-avatar {
-      width:28px; height:28px; border-radius:50%; flex-shrink:0;
-      background:var(--accent); color:#fff; display:flex; align-items:center;
-      justify-content:center; font-size:.8rem; font-weight:800;
+      padding:6px 14px; white-space:nowrap;
     }
     .pill-house { font-size:.8rem; font-weight:700; color:var(--text); line-height:1.2; }
     .pill-name { font-size:.72rem; color:var(--text-muted); line-height:1.2; }
+    .profile-menu { position:relative; }
+    .profile-menu > summary { list-style:none; }
+    .profile-menu > summary::-webkit-details-marker { display:none; }
+    .pill-chevron { color:var(--text-muted); font-size:10px; margin-left:2px; transition:transform .18s; }
+    .profile-menu[open] .pill-chevron { transform:rotate(180deg); }
+    .profile-dropdown { position:absolute; z-index:220; top:calc(100% + 8px); right:0; width:220px; padding:7px; background:var(--card); border:1px solid var(--border); border-radius:14px; box-shadow:0 14px 34px rgba(49,38,29,.16); }
+    .profile-dropdown a,.profile-dropdown button { display:flex; width:100%; box-sizing:border-box; align-items:center; gap:9px; border:0; border-radius:9px; padding:10px 11px; background:transparent; color:var(--text); font:inherit; font-size:13px; text-align:left; text-decoration:none; cursor:pointer; }
+    .profile-dropdown a:hover,.profile-dropdown button:hover { background:var(--bg-soft); }
+    .profile-dropdown .profile-logout { color:#a33b32; border-top:1px solid var(--border); border-radius:0 0 9px 9px; margin-top:4px; }
     .hero { text-align:center; margin:22px 0 4px; }
     .ornament { display:flex; align-items:center; justify-content:center; gap:12px; margin-bottom:14px; }
     .o-line { width:56px; height:1px; background:linear-gradient(90deg,transparent,var(--accent)); }
@@ -168,18 +176,23 @@
     .brand { color:var(--text-soft); font-weight:600; }
     .color-th { color:var(--text-muted); }
 
-    /* in/out block */
-    .io { text-align:right; white-space:nowrap; font-size:13.5px; line-height:1.2;
-      min-width:96px; font-weight:700; }
+    /* in/out timeline — chronological, with explicit direction labels */
+    .io { display:flex; justify-content:flex-end; align-items:center; flex-wrap:wrap;
+      gap:3px 8px; text-align:right; font-size:13px; line-height:1.25;
+      min-width:150px; font-weight:700; }
+    .io-event { display:inline-flex; align-items:baseline; gap:4px; white-space:nowrap; }
+    .io-label { font-size:11px; font-weight:600; color:var(--text-muted); }
     .io-in { color:var(--ok); font-weight:600; }
     .io-out { color:var(--err); font-weight:600; }
-    .io-arrow, .io .muted { color:var(--text-muted); font-weight:400; }
+    .io-sep, .io .muted { color:var(--text-muted); font-weight:400; }
     @media (max-width:390px) {
       .item { gap:8px; padding-left:12px; padding-right:12px; }
       .it-main { gap:8px; }
       .plate { min-width:74px; padding:0 8px; font-size:13px; }
       .it-sub { font-size:12.5px; }
-      .io { min-width:82px; font-size:13px; }
+      .io { min-width:108px; max-width:118px; gap:2px 6px; font-size:12.5px; }
+      .io-label { font-size:10.5px; }
+      .io-sep { display:none; }
     }
 
     .reason { font-size:13px; color:var(--err); font-weight:600; }
@@ -247,31 +260,73 @@
     .search-dir.out { background:var(--err-bg); color:var(--err); }
     .search-camera { font-size:12.5px; color:var(--text-muted); }
     .search-empty { padding:24px 16px; text-align:center; color:var(--text-muted); font-size:13.5px; }
+    .search-vehicles { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
+    .search-vehicle { display:inline-flex; align-items:center; gap:6px; padding:6px 9px;
+      border:1px solid var(--border-soft); border-radius:9px; background:var(--card);
+      font-family:'IBM Plex Mono', monospace; font-size:12px; font-weight:700; }
+    .search-vehicle small { font-family:'IBM Plex Sans Thai', sans-serif; font-size:10.5px;
+      font-weight:500; color:var(--text-muted); }
+    .house-search-event .it-main { flex:1; }
+    .house-search-detail { min-width:0; display:flex; flex-wrap:wrap; align-items:center;
+      gap:5px 8px; }
+    @media (max-width:390px) {
+      .house-search-event .plate { min-width:78px; }
+      .house-search-event { align-items:flex-start; }
+      .house-search-detail { gap:4px 6px; }
+    }
 
-    /* photo evidence lightbox */
-    .pbx { position:fixed; inset:0; background:rgba(40,30,18,0.55);
-      display:none; align-items:flex-start; justify-content:center;
-      padding:24px 14px; z-index:60; overflow-y:auto; }
+    /* photo evidence lightbox — fixed shell, independently scrolling evidence */
+    .pbx { position:fixed; inset:0; background:rgba(40,30,18,0.64);
+      backdrop-filter:blur(3px); display:none; align-items:center; justify-content:center;
+      padding:12px; z-index:300; overflow:hidden; }
     .pbx.open { display:flex; }
-    .pbx-card { background:var(--card); border-radius:18px; width:100%; max-width:420px;
-      box-shadow:var(--shadow); padding:18px 18px 20px; position:relative; }
-    .pbx-x { position:absolute; top:12px; right:12px; width:32px; height:32px;
-      border:none; border-radius:50%; background:var(--bg-soft); color:var(--text-soft);
-      font-size:15px; cursor:pointer; line-height:1; }
-    .pbx-x:hover { background:var(--neutral-bg); }
-    .pbx-head { display:flex; flex-direction:column; gap:3px; margin:2px 36px 14px 2px; }
-    .pbx-plate { font-family:'IBM Plex Mono', monospace; font-size:18px; font-weight:700;
-      color:var(--text); letter-spacing:0.02em; }
-    .pbx-sub { font-size:13px; color:var(--text-muted); }
-    .pbx-item { margin-bottom:14px; }
+    .pbx-card { background:var(--card); border-radius:20px; width:100%; max-width:460px;
+      height:min(780px, calc(100dvh - 24px)); max-height:calc(100dvh - 24px);
+      box-shadow:0 20px 56px rgba(40,30,18,.27);
+      display:flex; flex-direction:column; overflow:hidden; position:relative; }
+    .pbx-x { position:absolute; top:13px; right:13px; width:32px; height:32px;
+      border:1px solid var(--border); border-radius:50%; background:var(--card);
+      color:var(--text-soft); font-size:14px; cursor:pointer; line-height:1;
+      display:flex; align-items:center; justify-content:center;
+      box-shadow:0 1px 2px rgba(60,40,20,.06); transition:background .15s, color .15s; z-index:2; }
+    .pbx-x:hover { background:var(--bg-soft); color:var(--text); }
+    .pbx-head { flex:none; padding:15px 56px 14px 18px;
+      background:linear-gradient(180deg,#fdf8ee 0%, var(--card) 100%);
+      border-bottom:1px solid var(--border-soft); }
+    .pbx-house { display:inline-flex; align-items:center; gap:5px;
+      background:var(--warn-bg); color:var(--accent-deep);
+      font-size:14.5px; font-weight:700; line-height:1;
+      padding:7px 14px; border-radius:999px; }
+    .pbx-house.ext { background:var(--neutral-bg); color:var(--text-soft); }
+    .pbx-label { display:block; margin:10px 0 5px; font-size:10.5px; font-weight:600;
+      letter-spacing:.14em; color:var(--text-muted); }
+    .pbx-title-row { display:flex; align-items:center; flex-wrap:wrap; gap:6px 11px; }
+    .pbx-plate { font-family:'IBM Plex Mono', monospace; font-size:17px; font-weight:700;
+      color:var(--text); letter-spacing:0.07em; white-space:nowrap;
+      background:var(--card); border:1.5px solid var(--accent); border-radius:9px;
+      padding:5px 11px; box-shadow:0 1px 2px rgba(60,40,20,.06); }
+    .pbx-sub { font-size:13px; font-weight:500; color:var(--text-soft); }
+    .pbx-body { overflow-y:auto; overscroll-behavior:contain; padding:14px 18px;
+      scrollbar-gutter:stable; flex:1 1 auto; min-height:0; }
+    .pbx-item { margin-bottom:18px; }
     .pbx-item:last-child { margin-bottom:0; }
-    .pbx-cap { font-size:13px; font-weight:600; margin-bottom:6px; }
+    .pbx-cap { display:flex; align-items:baseline; gap:6px; font-size:13px; font-weight:600;
+      margin:0 0 7px; }
     .pbx-cap .pbx-time { color:var(--text-muted); font-weight:400; font-size:12.5px; }
-    .pbx-img { display:block; width:100%; border-radius:12px; border:1px solid var(--border); }
+    .pbx-img { display:block; width:100%; border-radius:13px; border:1px solid var(--border); }
     .pbx-noimg { font-size:12.5px; color:var(--text-muted); background:var(--bg-soft);
       border-radius:12px; padding:20px; text-align:center; }
     .pbx-empty { font-size:13.5px; color:var(--text-muted); text-align:center; padding:24px 0; }
-    .pbx-foot { font-size:11.5px; color:var(--text-muted); text-align:center; margin-top:6px; }
+    .pbx-foot { flex:none; font-size:11.5px; color:var(--text-muted); text-align:center;
+      border-top:1px solid var(--border-soft); padding:11px 16px 12px; }
+    @media (max-width:480px) {
+      .pbx { padding:0; align-items:flex-end; }
+      .pbx-card { width:100%; height:calc(100dvh - 8px); max-width:none;
+        max-height:calc(100dvh - 8px); border-radius:20px 20px 0 0; }
+      .pbx-head { padding:14px 52px 13px 16px; }
+      .pbx-plate { font-size:16px; padding:5px 10px; }
+      .pbx-body { padding:13px 16px; }
+    }
 
     /* login */
     .overlay { position:fixed; inset:0; background:rgba(40,30,18,0.45);
@@ -327,16 +382,16 @@
 
     <section class="searchbox">
       <div class="search-label">
-        <span>ค้นหาเลขทะเบียน</span>
+        <span>ค้นหาทะเบียน หรือบ้านเลขที่</span>
         <small>ค้นหาข้ามวันอัตโนมัติ</small>
       </div>
       <div class="search-row">
         <input id="plateSearch" type="text" inputmode="text" autocomplete="off"
-          placeholder="พิมพ์เลขทะเบียน เช่น 1กข1234" />
+          placeholder="เช่น 1กข1234 หรือ 38/8" />
         <button id="plateClear" class="search-clear" type="button" disabled>ล้าง</button>
       </div>
       <div id="searchHint" class="search-hint">
-        พิมพ์เลขทะเบียนให้ครบ แล้วระบบจะแสดงช่วงวันที่และเวลาเข้าออกของคันนั้นให้ทันที
+        ค้นหาทะเบียนหนึ่งคัน หรือบ้านเลขที่เพื่อดูรถทุกคันและการเข้าออกทั้งหมด
       </div>
     </section>
 
@@ -399,16 +454,30 @@
 
     function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){
       return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+    var badgeMounted=false;
     function renderIdentity(s){
+      if(badgeMounted){ window.PattraBadge.refresh(); return; }
       if(!s){ elIdentity.innerHTML=''; return; }
       var name=s.residentName||'';
-      var initial=((name||s.houseNo||'').match(/[\dA-Za-z฀-๿]/)||['P'])[0].toUpperCase();
-      elIdentity.innerHTML='<div class="identity-pill" id="idPill" title="ออกจากระบบ">'+
-        '<div class="pill-avatar">'+esc(initial)+'</div><div>'+
+      var houseQuery=encodeURIComponent(s.houseNo);
+      elIdentity.innerHTML='<details class="profile-menu"><summary class="identity-pill" title="เปิดเมนูบัญชี" aria-label="เปิดเมนูบัญชี">'+
+        '<div>'+
         '<div class="pill-house">บ้าน '+esc(s.houseNo)+'</div>'+
-        '<div class="pill-name">'+esc(name||'กรรมการ')+'</div></div></div>';
-      var p=document.getElementById('idPill');
+        '<div class="pill-name">'+esc(name||'กรรมการ')+'</div></div><span class="pill-chevron" aria-hidden="true">▼</span></summary>'+
+        '<div class="profile-dropdown"><a href="/data/?house='+houseQuery+'">👤 แก้ไขข้อมูลส่วนตัว</a>'+
+        '<a href="/vehicle/?house='+houseQuery+'">🚗 ลงทะเบียนรถยนต์</a>'+
+        '<button class="profile-logout" id="profileLogout" type="button">ออกจากระบบ</button></div></details>';
+      var p=document.getElementById('profileLogout');
       if(p) p.addEventListener('click',function(){ localStorage.removeItem(SESSION_KEY); renderIdentity(null); showLogin(); });
+    }
+    function mountResidentBadge(){
+      if(!window.PattraBadge) return false;
+      window.PattraBadge.mount('#headerIdentity',{
+        onLogin:showLogin,
+        onLogout:function(){ renderIdentity(null); showLogin(); }
+      });
+      badgeMounted=true;
+      return true;
     }
     function todayStr(){ var d=new Date(); return d.getFullYear()+'-'+
       String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
@@ -419,6 +488,10 @@
         .replace(/[\s-]/g, '')
         .trim()
         .toUpperCase();
+    }
+
+    function isHouseSearch(query){
+      return /^38\/\d{1,2}$/.test(String(query||''));
     }
 
     function formatBangkokDateLabel(epoch){
@@ -451,9 +524,26 @@
       if(!s||Number(s.expiresAt)<=Date.now()) return null; return s; }catch(e){return null;} }
     function storeSession(h,p){ localStorage.setItem(SESSION_KEY, JSON.stringify({
       houseNo:h, pin:p, expiresAt:Date.now()+TTL })); }
-    function showLogin(msg){ elOverlay.classList.add('open'); renderIdentity(null);
-      if(msg){ elMErr.textContent=msg; elMErr.classList.add('show'); }
-      setTimeout(function(){ elSuffix.focus(); }, 80); }
+    /* One login surface for the whole site. A committee tool does not
+       advertise itself to a signed-out visitor — no feature list here, just
+       the same sheet every other page uses. The modal below stays as the
+       fallback for a visit where /assets/resident-auth.js did not load. */
+    function showLogin(msg){
+      renderIdentity(null);
+      if(!window.PattraAuth){
+        elOverlay.classList.add('open');
+        if(msg){ elMErr.textContent=msg; elMErr.classList.add('show'); }
+        setTimeout(function(){ elSuffix.focus(); }, 80);
+        return;
+      }
+      window.PattraAuth.require({
+        service:'LPR Log (เฉพาะกรรมการ)',
+        reason: msg || 'บันทึกรถเข้า-ออกรายวันเปิดให้เฉพาะกรรมการที่มีสิทธิ์ กรุณายืนยันเลขบ้านกับ PIN'
+      }).then(function(session){
+        if(!session) return;
+        loadCurrent();
+      });
+    }
     function hideLogin(){ elOverlay.classList.remove('open'); elMErr.classList.remove('show'); }
 
     /* fix1: friendly date + coverage window caption */
@@ -473,13 +563,18 @@
       return compact.replace(/^(.+?)(\d{1,4})$/, '$1 $2');
     }
 
-    /* in/out — compact single line */
+    /* First event in each direction, shown in actual time order. */
     function ioBlock(r){
-      var inT = r.entryTime ? '<span class="io-in">'+esc(r.entryTime)+'</span>' :
-        '<span class="muted">—</span>';
-      var outT = r.exitTime ? '<span class="io-out">'+esc(r.exitTime)+'</span>' :
-        '<span class="muted">—</span>';
-      return '<div class="io">'+inT+' <span class="io-arrow">→</span> '+outT+'</div>';
+      var events=[];
+      if(r.entryTime) events.push({time:String(r.entryTime),label:'เข้า',cls:'io-in'});
+      if(r.exitTime) events.push({time:String(r.exitTime),label:'ออก',cls:'io-out'});
+      events.sort(function(a,b){ return a.time.localeCompare(b.time); });
+      if(!events.length) return '<div class="io"><span class="muted">ไม่พบเวลา</span></div>';
+      return '<div class="io">'+events.map(function(event,index){
+        return (index?'<span class="io-sep">·</span>':'')+
+          '<span class="io-event '+event.cls+'"><span class="io-label">'+event.label+'</span> '+
+          esc(event.time)+'</span>';
+      }).join('')+'</div>';
     }
 
     /* photo-evidence registry: maps a row to a click id (rebuilt each render) */
@@ -612,6 +707,31 @@
         '</div><span class="row-go">›</span></div>';
     }
 
+    function houseSearchEventRow(houseNo, event){
+      var row = {
+        plate: event.plate || '',
+        houses: event.houses || [houseNo],
+        vehicleVision: event.vehicleVision || null,
+        captures: [{
+          label: event.directionLabel || 'ผ่าน',
+          direction: event.direction || '',
+          time: event.time || '',
+          cameraId: event.cameraId || '',
+          imageUrl: event.imageUrl || '',
+        }],
+      };
+      var id=regRow(row);
+      var dirCls=event.direction==='entry'?'in':event.direction==='exit'?'out':'';
+      return '<div class="item tap search-event house-search-event" data-cap="'+id+'">'+
+        '<div class="it-main"><span class="plate">'+
+          esc(event.displayPlate || displayPlate(event.plate || ''))+'</span>'+
+          '<div class="house-search-detail">'+
+            '<span class="search-time">'+esc(event.time || '--:--')+'</span>'+
+            '<span class="search-dir '+dirCls+'">'+esc(event.directionLabel || 'ผ่าน')+'</span>'+
+            '<span class="search-camera">กล้อง '+esc(event.cameraId || '-')+'</span>'+
+          '</div></div><span class="row-go">›</span></div>';
+    }
+
     function renderSearch(r){
       lastSearchReport=r; currentMode='search';
       CAPS={}; capSeq=0;
@@ -657,6 +777,43 @@
       setSearchHint('ค้นหาครบแล้ว: พบ '+(s.totalEvents||0)+' ครั้งใน '+(s.totalDays||0)+' วัน', 'ok');
     }
 
+    function renderHouseSearch(r){
+      lastSearchReport=r; currentMode='search'; CAPS={}; capSeq=0;
+      var s=r.summary||{}; var houseNo=s.houseNo||r.queryHouseNo||'';
+      elCap.innerHTML='บ้าน '+esc(houseNo)+
+        '<span class="win">รถทุกคัน · ประวัติเข้าออกทุกวันที่เก็บไว้</span>';
+      var range=s.firstLabel&&s.lastLabel?(s.firstLabel+' → '+s.lastLabel):'ไม่มีข้อมูล';
+      var vehicles=(s.vehicles||[]).map(function(vehicle){
+        return '<span class="search-vehicle">'+
+          esc(vehicle.displayPlate||displayPlate(vehicle.plate||''))+
+          '<small>'+esc(vehicle.eventCount||0)+' ครั้ง</small></span>';
+      }).join('');
+      var summary='<div class="search-summary">'+
+        '<div class="search-summary-top"><div><div class="search-summary-plate">บ้าน '+
+          esc(houseNo)+'</div><div class="search-summary-tag">รถที่ลงทะเบียน '+
+          esc(s.registeredCars||0)+' คัน · พบในกล้อง '+esc(s.activeCars||0)+' คัน</div></div>'+
+          '<div class="search-summary-tag">ช่วงรวม '+esc(range)+'</div></div>'+
+        '<div class="search-summary-stats">'+
+          '<div class="search-stat"><div class="lbl">พบทั้งหมด</div><div class="val">'+esc(s.totalEvents||0)+' ครั้ง</div></div>'+
+          '<div class="search-stat"><div class="lbl">พบต่างวัน</div><div class="val">'+esc(s.totalDays||0)+' วัน</div></div>'+
+          '<div class="search-stat"><div class="lbl">เข้า</div><div class="val">'+esc(s.entryEvents||0)+' ครั้ง</div></div>'+
+          '<div class="search-stat"><div class="lbl">ออก</div><div class="val">'+esc(s.exitEvents||0)+' ครั้ง</div></div></div>'+
+        (vehicles?'<div class="search-vehicles">'+vehicles+'</div>':'')+'</div>';
+      var groups=(r.dateGroups||[]).map(function(group){
+        var inner=(group.events||[]).map(function(event){
+          return houseSearchEventRow(houseNo,event);
+        }).join('');
+        return acc('house-'+group.reportDate,'',group.dateLabel,
+          group.eventCount+' ครั้ง · '+group.timeRange,
+          inner||'<div class="search-empty">ไม่พบรายการในวันนี้</div>',true);
+      }).join('');
+      elBody.innerHTML=summary+'<div class="search-groups">'+
+        (groups||'<div class="search-empty">ไม่พบรถของบ้านนี้ผ่านกล้องในช่วงที่เก็บไว้</div>')+
+        '</div>';
+      setSearchHint('บ้าน '+houseNo+': รถ '+(s.registeredCars||0)+' คัน · พบ '+
+        (s.totalEvents||0)+' ครั้งใน '+(s.totalDays||0)+' วัน','ok');
+    }
+
     /* fix2 + fix5: accordion toggle + stat boxes navigate */
     elBody.addEventListener('click', function(e){
       var save = e.target.closest('.cmt-save');
@@ -675,13 +832,19 @@
         elPbxBody=document.getElementById('pbxBody');
     function closePhotos(){ elPbx.classList.remove('open'); elPbxBody.innerHTML=''; }
     function openPhotos(r){
-      var caps=(r&&r.captures)||[];
+      var caps=((r&&r.captures)||[]).slice().sort(function(a,b){
+        return String(a.time||'99:99').localeCompare(String(b.time||'99:99'));
+      });
       var v=(r&&r.vehicleVision)||{}; var brand=[v.make,v.model].filter(Boolean).join(' ');
       var cth=colorTh(v.color);
       var sub=[brand,cth].filter(Boolean).join(' · ');
-      var head='<span class="pbx-plate">'+esc(displayPlate(r.plate))+'</span>';
-      if(r.houses&&r.houses.length) head+='<span class="pbx-sub">บ้าน '+r.houses.map(esc).join(', ')+'</span>';
-      if(sub) head+='<span class="pbx-sub">'+esc(sub)+'</span>';
+      var head=(r.houses&&r.houses.length)
+        ? '<span class="pbx-house">🏠 บ้าน '+r.houses.map(esc).join(', ')+'</span>'
+        : '<span class="pbx-house ext">🚗 รถภายนอก</span>';
+      head+='<span class="pbx-label">ทะเบียนรถ</span>'+
+        '<div class="pbx-title-row"><span class="pbx-plate">'+
+        esc(displayPlate(r.plate))+'</span>'+
+        (sub ? '<span class="pbx-sub">'+esc(sub)+'</span>' : '')+'</div>';
       elPbxHead.innerHTML=head;
       if(!caps.length){
         elPbxBody.innerHTML='<div class="pbx-empty">ไม่มีภาพสำหรับรายการนี้</div>';
@@ -742,8 +905,10 @@
       try{
         var res=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',
           body:JSON.stringify({action:'dailyLog',houseNo:s.houseNo,pin:s.pin,reportDate:elDate.value})});
-        if(res.status===401||res.status===403){ localStorage.removeItem(SESSION_KEY);
-          showLogin('สิทธิ์ไม่ถูกต้องหรือหมดอายุ กรุณาเข้าสู่ระบบใหม่'); return; }
+        if(res.status===401){ localStorage.removeItem(SESSION_KEY);
+          showLogin('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่'); return; }
+        if(res.status===403){
+          elBody.innerHTML='<div class="note">บัญชีนี้ไม่มีสิทธิ์ดูข้อมูลส่วนนี้</div>'; return; }
         var data=await res.json();
         if(!res.ok||!data.ok) throw new Error(data&&data.error?data.error:('HTTP '+res.status));
         renderIdentity(s); renderDaily(data.report);
@@ -753,6 +918,7 @@
     async function loadSearch(){
       var s=getSession(); if(!s){ showLogin(); return; }
       var query=normalizePlateSearch(elSearch.value);
+      var houseSearch=isHouseSearch(query);
       if(!query){
         setSearchHint('พิมพ์เลขทะเบียนเพื่อค้นหาข้ามวัน', 'neutral');
         await loadDaily();
@@ -762,25 +928,31 @@
         searchToken++;
         currentMode='search';
         setNavState(true);
-        elBody.innerHTML='<div class="search-empty">พิมพ์เลขทะเบียนให้ครบอย่างน้อย 4 ตัวอักษรเพื่อเริ่มค้นหา</div>';
-        elCap.innerHTML='ค้นหาเลขทะเบียน<span class="win">กำลังรอให้พิมพ์ครบก่อนค้นหาข้ามวัน</span>';
-        setSearchHint('พิมพ์ทะเบียนให้ครบก่อน ระบบจะค้นหาข้ามวันอัตโนมัติ', 'neutral');
+        elBody.innerHTML='<div class="search-empty">พิมพ์ทะเบียนให้ครบ หรือบ้านเลขที่ เช่น 38/8</div>';
+        elCap.innerHTML='ค้นหา<span class="win">ค้นหาทะเบียนรถหรือบ้านเลขที่</span>';
+        setSearchHint('พิมพ์ทะเบียนให้ครบ หรือระบุบ้านเลขที่ เช่น 38/8', 'neutral');
         return;
       }
       var token=++searchToken;
       currentMode='search';
       setNavState(true);
       elBody.innerHTML='<div class="loading"><span class="spinner"></span>กำลังค้นหา…</div>';
-      setSearchHint('กำลังค้นหาเลขทะเบียน '+displayPlate(query)+' ข้ามวัน…', 'neutral');
+      setSearchHint(houseSearch?'กำลังค้นหารถทุกคันของบ้าน '+query+'…':
+        'กำลังค้นหาเลขทะเบียน '+displayPlate(query)+' ข้ามวัน…', 'neutral');
       try{
         var res=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',
-          body:JSON.stringify({action:'searchPlate',houseNo:s.houseNo,pin:s.pin,plate:query})});
+          body:JSON.stringify(houseSearch?
+            {action:'searchHouse',houseNo:s.houseNo,pin:s.pin,queryHouseNo:query}:
+            {action:'searchPlate',houseNo:s.houseNo,pin:s.pin,plate:query})});
         if(token!==searchToken) return;
-        if(res.status===401||res.status===403){ localStorage.removeItem(SESSION_KEY);
-          showLogin('สิทธิ์ไม่ถูกต้องหรือหมดอายุ กรุณาเข้าสู่ระบบใหม่'); return; }
+        if(res.status===401){ localStorage.removeItem(SESSION_KEY);
+          showLogin('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่'); return; }
+        if(res.status===403){
+          elBody.innerHTML='<div class="note">บัญชีนี้ไม่มีสิทธิ์ดูข้อมูลส่วนนี้</div>'; return; }
         var data=await res.json();
         if(!res.ok||!data.ok) throw new Error(data&&data.error?data.error:('HTTP '+res.status));
-        renderIdentity(s); renderSearch(data.report);
+        renderIdentity(s);
+        if(houseSearch) renderHouseSearch(data.report); else renderSearch(data.report);
       }catch(err){ elBody.innerHTML='<div class="note">โหลดข้อมูลไม่สำเร็จ<br><small>'+esc(err.message)+'</small></div>'; }
     }
 
@@ -811,6 +983,7 @@
       if(s>todayStr()) return; elDate.value=s; loadCurrent();
     }
 
+    document.addEventListener('DOMContentLoaded',mountResidentBadge);
     elDate.value=todayStr(); elDate.max=todayStr();
     elDate.addEventListener('change', function(){ if(elDate.value>todayStr()) elDate.value=todayStr(); loadCurrent(); });
     elPrev.addEventListener('click', function(){ shiftDay(-1); });
@@ -845,6 +1018,8 @@
       return loadDaily();
     }
 
+    document.addEventListener('click',function(e){document.querySelectorAll('.profile-menu[open]').forEach(function(menu){if(!menu.contains(e.target))menu.open=false;});});
+    document.addEventListener('keydown',function(e){if(e.key==='Escape')document.querySelectorAll('.profile-menu[open]').forEach(function(menu){menu.open=false;});});
     loadCurrent();
   })();
   </script>
